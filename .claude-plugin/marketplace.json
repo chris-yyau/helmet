@@ -1,0 +1,20 @@
+{
+  "name": "helmet",
+  "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
+  "owner": {
+    "name": "Chris Yau"
+  },
+  "plugins": [
+    {
+      "name": "helmet",
+      "source": "./",
+      "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
+      "version": "1.0.0",
+      "author": {
+        "name": "Chris Yau"
+      },
+      "license": "MIT",
+      "keywords": ["ci-cd", "testing", "pipeline", "onboarding", "codecov", "security"]
+    }
+  ]
+}
