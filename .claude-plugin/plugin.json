@@ -1,0 +1,11 @@
+{
+  "name": "helmet",
+  "version": "1.0.0",
+  "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
+  "author": {
+    "name": "chris-yyau"
+  },
+  "repository": "https://github.com/chris-yyau/helmet",
+  "license": "MIT",
+  "keywords": ["ci-cd", "testing", "pipeline", "onboarding", "codecov", "security"]
+}
