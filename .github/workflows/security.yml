@@ -1,0 +1,151 @@
+name: Security
+
+on:
+  pull_request:
+    paths:
+      - '.github/**'
+      - '**/*.sh'
+      - '**/*.js'
+      - '**/*.py'
+      - '**/*.yml'
+      - 'package.json'
+      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '**/yarn.lock'
+      - '**/go.sum'
+      - '**/requirements*.txt'
+      - '**/Dockerfile'
+      - '**/*.tf'
+  push:
+    branches: [main]
+    paths:
+      - '.github/**'
+      - '**/*.sh'
+      - '**/*.js'
+      - '**/*.py'
+      - '**/*.yml'
+      - 'package.json'
+      - '**/package-lock.json'
+      - '**/pnpm-lock.yaml'
+      - '**/yarn.lock'
+      - '**/go.sum'
+      - '**/requirements*.txt'
+      - '**/Dockerfile'
+      - '**/*.tf'
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  trivy:
+    name: Dependency CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check for compliance job
+        id: check
+        run: |
+          if grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Trivy already covered by compliance job — skipping"
+          fi
+      - name: Install trivy
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.58.2/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.58.2
+          trivy --version
+      - name: Scan dependencies
+        if: steps.check.outputs.skip != 'true'
+        run: trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --skip-dirs tests .
+
+  semgrep:
+    name: Code security
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install semgrep
+        run: pip install --quiet semgrep
+      - name: Scan for vulnerabilities
+        run: semgrep scan --config p/security-audit --error --exclude tests .
+
+  checkov:
+    name: IaC misconfig
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install checkov
+        run: pip install --quiet checkov
+      - name: Scan for misconfigurations
+        run: checkov -d . --skip-path tests --quiet --compact
+
+  zizmor:
+    name: Actions security
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify SHA pinning
+        run: bash .github/scripts/check-pinned-uses.sh
+      - name: Install zizmor
+        run: pip install --quiet zizmor
+      - name: Scan GitHub Actions workflows
+        run: zizmor .github/workflows/
+
+  reports:
+    if: always()
+    needs: [trivy, semgrep, checkov, zizmor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Write summary
+        env:
+          TRIVY: ${{ needs.trivy.result }}
+          SEMGREP: ${{ needs.semgrep.result }}
+          CHECKOV: ${{ needs.checkov.result }}
+          ZIZMOR: ${{ needs.zizmor.result }}
+        run: |
+          {
+            echo "## Security Backstop"
+            echo "| Scanner | Result |"
+            echo "|---------|--------|"
+            echo "| trivy | $TRIVY |"
+            echo "| semgrep | $SEMGREP |"
+            echo "| checkov | $CHECKOV |"
+            echo "| zizmor | $ZIZMOR |"
+          } >> "$GITHUB_STEP_SUMMARY"
