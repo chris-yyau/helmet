@@ -9,12 +9,19 @@
       "name": "helmet",
       "source": "./",
       "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
-      "version": "1.2.0",
+      "version": "1.4.0",
       "author": {
         "name": "Chris Yau"
       },
       "license": "MIT",
-      "keywords": ["ci-cd", "testing", "pipeline", "onboarding", "codecov", "security"]
+      "keywords": [
+        "ci-cd",
+        "testing",
+        "pipeline",
+        "onboarding",
+        "codecov",
+        "security"
+      ]
     }
   ]
 }
