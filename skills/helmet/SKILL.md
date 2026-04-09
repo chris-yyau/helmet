@@ -952,6 +952,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
 | Release config | `[ -f .releaserc.json ]` | File exists (N/A for non-release repos) |
 | Commitlint config | `[ -f commitlint.config.js ]` | File exists (N/A for non-release repos) |
+| CodeScene config | `[ -d .codescene ]` | Directory exists (N/A if CodeScene App not installed) |
 
 **Codecov detection logic:**
 1. Has test script (`"test"` in package.json / Makefile `test:` target / `go test` / `cargo test`) AND coverage config (`codecov.yml`, `.coveragerc`, vitest coverage config) -> **wire Codecov**
@@ -1009,6 +1010,7 @@ Show a summary table:
 | Harden-Runner (all ubuntu jobs) | ✅/❌ | |
 | Workflow hardening | ✅/❌ | timeouts, permissions, shell, concurrency |
 | Commit signing | ✅/❌ | SSH or GPG |
+| CodeScene | ✅/❌/N-A | quality gates config |
 ```
 
 After showing results, suggest fixes for any ❌ items referencing the specific section in this skill.
@@ -2161,6 +2163,231 @@ Especially valuable for AI-written workflows — LLMs default to version tags (`
 | zizmor | Staged workflows, WARN | All workflows, BLOCK | — |
 | trivy | Staged lock files, WARN | — | Full repo, BLOCK (HIGH+CRITICAL) |
 | gitleaks | Staged changes, BLOCK | — | — (GitGuardian covers CI) |
+
+#### O. CodeScene Behavioral Analysis (all repos with CodeScene App)
+
+CodeScene is a GitHub App that provides behavioral code analysis — code health scoring, complexity hotspots, and change coupling on PRs. Unlike static analysis (ESLint, Semgrep), it tracks how code *changes over time*.
+
+**Prerequisites:** Install the [CodeScene GitHub App](https://github.com/marketplace/codescene) on the org/repo.
+
+**Config** (`.codescene/custom-quality-gates.json`):
+
+Generate the config based on the detected language and framework. The config must be **framework-aware** — different frameworks have different test file patterns and exclusions.
+
+<details><summary>TypeScript/JavaScript — Next.js / React</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration",
+      "description": "Block PRs that introduce code health decline"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5,
+      "description": "Flag PRs that increase cyclomatic complexity significantly"
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      "node_modules/**",
+      ".next/**",
+      "dist/**",
+      "coverage/**",
+      "public/**",
+      "**/*.d.ts"
+    ],
+    "language_specific": {
+      "typescript": {
+        "file_extensions": [".ts", ".tsx"],
+        "test_patterns": ["__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details><summary>TypeScript/JavaScript — Express / Hono / Fastify / Generic</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration",
+      "description": "Block PRs that introduce code health decline"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5,
+      "description": "Flag PRs that increase cyclomatic complexity significantly"
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      "node_modules/**",
+      "dist/**",
+      "coverage/**",
+      "**/*.d.ts"
+    ],
+    "language_specific": {
+      "typescript": {
+        "file_extensions": [".ts", ".js"],
+        "test_patterns": ["__tests__/**", "**/*.test.ts", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details><summary>Python</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      "__pycache__/**",
+      ".venv/**",
+      "venv/**",
+      "dist/**",
+      "*.egg-info/**",
+      "htmlcov/**"
+    ],
+    "language_specific": {
+      "python": {
+        "file_extensions": [".py"],
+        "test_patterns": ["tests/**", "test_*.py", "*_test.py"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details><summary>Go</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      "vendor/**"
+    ],
+    "language_specific": {
+      "go": {
+        "file_extensions": [".go"],
+        "test_patterns": ["**/*_test.go"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details><summary>Rust</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      "target/**"
+    ],
+    "language_specific": {
+      "rust": {
+        "file_extensions": [".rs"],
+        "test_patterns": ["tests/**"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+<details><summary>Swift</summary>
+
+```json
+{
+  "quality_gates": {
+    "code_health_gate": {
+      "enabled": true,
+      "policy": "no_deterioration"
+    },
+    "complexity_gate": {
+      "enabled": true,
+      "max_increase": 5
+    }
+  },
+  "analysis": {
+    "exclude_patterns": [
+      ".build/**",
+      "DerivedData/**",
+      "*.xcodeproj/**"
+    ],
+    "language_specific": {
+      "swift": {
+        "file_extensions": [".swift"],
+        "test_patterns": ["Tests/**", "**/*Tests.swift"]
+      }
+    }
+  }
+}
+```
+
+</details>
+
+**Key rules for config generation:**
+
+1. **Never exclude authored config files.** Do NOT add `**/*.config.*` to exclude patterns — config files like `next.config.ts`, `tailwind.config.ts`, and `vitest.config.ts` contain real logic that should be analyzed. Only exclude truly generated artifacts (build output, type declarations, dependencies).
+2. **Match test patterns to framework.** React/Next.js projects need `.tsx` test patterns alongside `.ts`. Go uses `*_test.go` (not a separate directory). Rust integration tests go in `tests/` but unit tests are inline `#[cfg(test)]` modules.
+3. **Include `public/**` for web projects** in exclude patterns — static assets (images, fonts, icons) should not be analyzed for code health.
+4. **`no_deterioration` policy** means CodeScene blocks PRs that make already-problematic code worse, but allows PRs that touch healthy code. This is less disruptive than absolute thresholds.
+5. **`max_increase: 5`** is the default complexity cap. Raise to 10 for repos with known complex legacy code.
+
+**Setup steps:**
+1. Install [CodeScene GitHub App](https://github.com/marketplace/codescene) on the org
+2. Grant access to the target repo
+3. Create `.codescene/custom-quality-gates.json` using the template above (select by detected framework)
+4. CodeScene automatically reads the config and enforces gates on PRs
+
+**N/A condition:** If the CodeScene App is not installed on the org, mark as N/A in the audit.
 
 ### B4. Multi-Repo Deployment
 
