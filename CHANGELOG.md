@@ -1,3 +1,10 @@
+## [1.4.2](https://github.com/chris-yyau/helmet/compare/v1.4.1...v1.4.2) (2026-04-09)
+
+
+### Bug Fixes
+
+* scope RELEASE_TOKEN to release environment ([9f9084e](https://github.com/chris-yyau/helmet/commit/9f9084e90448fb108487d5cb5311840f8a15f869))
+
 ## [1.4.1](https://github.com/chris-yyau/helmet/compare/v1.4.0...v1.4.1) (2026-04-09)
 
 
