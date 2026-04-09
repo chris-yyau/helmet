@@ -1350,7 +1350,15 @@ comment:
   require_changes: true
 ```
 
-**Secret:** Set `CODECOV_TOKEN` as org-level secret (one token for all org repos).
+**Secret:** After wiring Codecov, auto-set the repo secret from the `CODECOV_TOKEN` environment variable:
+```bash
+if [ -n "${CODECOV_TOKEN:-}" ]; then
+  echo "$CODECOV_TOKEN" | gh secret set CODECOV_TOKEN --repo "$OWNER/$REPO"
+  echo "✅ CODECOV_TOKEN secret set from environment"
+else
+  echo "⚠️  CODECOV_TOKEN env var not set — set it manually: gh secret set CODECOV_TOKEN --repo $OWNER/$REPO"
+fi
+```
 
 #### B. Action Pinning (Pinact)
 
