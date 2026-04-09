@@ -1058,7 +1058,7 @@ on:
       - '**/requirements*.txt'
       - '**/Dockerfile'
       - '**/*.tf'
-      - 'pyproject.toml'
+      - '**/pyproject.toml'
       - '**/uv.lock'
       - '**/Cargo.lock'
       - '**/Package.resolved'
@@ -1827,6 +1827,10 @@ on:
       - '**/requirements*.txt'
       - '**/Dockerfile'
       - '**/*.tf'
+      - '**/pyproject.toml'
+      - '**/uv.lock'
+      - '**/Cargo.lock'
+      - '**/Package.resolved'
   push:
     branches: [main]
     paths: [...]                    # Same paths as pull_request
@@ -1835,8 +1839,7 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
