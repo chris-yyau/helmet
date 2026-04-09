@@ -109,6 +109,8 @@ After detecting the language, inspect dependency declarations for framework-spec
 | `fastapi` | FastAPI | TestClient, dependency overrides |
 | `django` | Django | TestCase, Client, model tests |
 | `flask` | Flask | Test client, route tests |
+| `typer` | Typer (CLI) | CliRunner, exit codes, output assertions |
+| `click` | Click (CLI) | CliRunner, exit codes, output assertions |
 | None matched | Generic | Module/function-level tests |
 
 **Go** (check `require` block in `go.mod`):
@@ -450,17 +452,17 @@ import { describe, it, expect } from 'vitest'
 
 describe('yourFunction', () => {
   // Happy path
-  it('returns expected result for valid input', () => {
-    // const result = yourFunction('valid')
-    // expect(result).toBe(expected)
-    expect(true).toBe(true) // Replace with real test
-  })
+  it.todo('returns expected result for valid input')
+  // it('returns expected result for valid input', () => {
+  //   const result = yourFunction('valid')
+  //   expect(result).toBe(expected)
+  // })
 
   // Error case
-  it('throws on invalid input', () => {
-    // expect(() => yourFunction(null)).toThrow()
-    expect(true).toBe(true) // Replace with real test
-  })
+  it.todo('throws on invalid input')
+  // it('throws on invalid input', () => {
+  //   expect(() => yourFunction(null)).toThrow()
+  // })
 })
 ```
 
@@ -507,7 +509,7 @@ def test_with_dependency_override():
     # app.dependency_overrides[get_db] = mock_db
     # response = client.get("/items")
     # app.dependency_overrides.clear()
-    assert True  # Replace with real test
+    pass  # Replace with real test
 ```
 
 </details>
@@ -532,14 +534,101 @@ For more patterns, see `busdriver:python-testing`.
 def test_happy_path():
     # result = your_function("valid input")
     # assert result == expected
-    assert True  # Replace with real test
+    pass  # Replace with real test
 
 
 # Error case: verify error handling
 def test_error_case():
     # with pytest.raises(ValueError):
     #     your_function(None)
-    assert True  # Replace with real test
+    pass  # Replace with real test
+```
+
+</details>
+
+<details><summary>Python -- Typer CLI example</summary>
+
+```python
+"""
+TEMPLATE TEST -- Copy this file as a starting point for new test files.
+
+Pattern: pytest + Typer's CliRunner for CLI command testing.
+Run: pytest
+Coverage: pytest --cov
+
+For full TDD workflow, use `busdriver:tdd`.
+For more patterns, see `busdriver:python-testing`.
+"""
+from typer.testing import CliRunner
+from app.main import app  # Adjust to your Typer app import
+
+runner = CliRunner()
+
+
+# Happy path: verify command runs and produces expected output
+def test_command_succeeds():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "Usage" in result.output
+
+
+# Error case: verify proper error exit on bad input
+def test_command_bad_input():
+    result = runner.invoke(app, ["nonexistent-command"])
+    assert result.exit_code != 0
+
+
+# Framework pattern: test a subcommand with arguments
+def test_subcommand_with_args(tmp_path):
+    """Use tmp_path for any file I/O to keep tests isolated."""
+    # result = runner.invoke(app, ["process", "--input", str(tmp_path / "data.csv")])
+    # assert result.exit_code == 0
+    # assert "Processed" in result.output
+    pass  # Replace with real test
+```
+
+</details>
+
+<details><summary>Python -- Click CLI example</summary>
+
+```python
+"""
+TEMPLATE TEST -- Copy this file as a starting point for new test files.
+
+Pattern: pytest + Click's CliRunner for CLI command testing.
+Run: pytest
+Coverage: pytest --cov
+
+For full TDD workflow, use `busdriver:tdd`.
+For more patterns, see `busdriver:python-testing`.
+"""
+from click.testing import CliRunner
+from app.main import cli  # Adjust to your Click group/command import
+
+runner = CliRunner()
+
+
+# Happy path: verify command runs and produces expected output
+def test_command_succeeds():
+    result = runner.invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "Usage" in result.output
+
+
+# Error case: verify proper error exit on bad input
+def test_command_missing_required():
+    result = runner.invoke(cli, ["process"])  # Missing required arg
+    assert result.exit_code != 0
+    assert "Error" in result.output or "Missing" in result.output
+
+
+# Framework pattern: test with isolated filesystem
+def test_command_with_files(tmp_path):
+    """Use tmp_path for file I/O; use runner.isolated_filesystem() for CWD isolation."""
+    # with runner.isolated_filesystem(temp_dir=tmp_path):
+    #     result = runner.invoke(cli, ["init"])
+    #     assert result.exit_code == 0
+    pass  # Replace with real test
 ```
 
 </details>
@@ -695,23 +784,32 @@ import XCTest
 final class TemplateTests: XCTestCase {
 
     // Happy path: verify function returns expected result
-    func testHappyPath() {
+    func testHappyPath() throws {
         // let result = yourFunction("valid")
         // XCTAssertEqual(result, expected)
-        XCTAssertTrue(true, "Replace with real test")
+        throw XCTSkip("Template — replace with real test")
     }
 
     // Error case: verify error handling
-    func testErrorCase() {
+    func testErrorCase() throws {
         // XCTAssertThrowsError(try yourFunction(nil))
-        XCTAssertTrue(true, "Replace with real test")
+        throw XCTSkip("Template — replace with real test")
     }
 }
 ```
 
 </details>
 
-Adapt all import paths and function names to match the actual codebase. The template is a starting point -- the tests should compile and pass as-is (with placeholder assertions), so the developer can immediately see the pattern and replace with real tests.
+Adapt all import paths and function names to match the actual codebase. The template is a starting point -- the tests should compile and pass as-is, so the developer can immediately see the pattern and replace with real tests.
+
+**Placeholder tests:** Avoid always-passing no-op assertions (`assert True`, `expect(true).toBe(true)`, `XCTAssertTrue(true)`) in template tests -- they inflate pass counts and trigger automated reviewer warnings. Instead:
+- **Python:** Use `pass` for placeholder bodies
+- **TypeScript/JS:** Use `it.todo('description')` (vitest/jest mark them as pending, not passing)
+- **Swift:** Use `throw XCTSkip("Template — replace with real test")`
+- **Go:** `t.Log(...)` is fine (informational, not a false assertion)
+- **Rust:** Commented-out assertions are fine (no placeholder needed)
+
+For tests that demonstrate a real pattern (e.g., importing the app, hitting a real endpoint), use actual assertions -- only use placeholders for commented-out examples the developer hasn't wired up yet.
 
 ## A4. Post-Setup
 
