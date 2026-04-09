@@ -1,3 +1,10 @@
+## [1.7.1](https://github.com/chris-yyau/helmet/compare/v1.7.0...v1.7.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* address PR [#10](https://github.com/chris-yyau/helmet/issues/10) review comments ([#11](https://github.com/chris-yyau/helmet/issues/11)) ([c5753b8](https://github.com/chris-yyau/helmet/commit/c5753b8a3b4d09750854b1bfd0e256f58fd2a82d))
+
 # [1.7.0](https://github.com/chris-yyau/helmet/compare/v1.6.0...v1.7.0) (2026-04-09)
 
 
