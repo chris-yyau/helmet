@@ -1281,7 +1281,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: suzuki-shunsuke/pinact-action@cf51507d80d4d6522a07348e3d58790290eaf0b6 # v2.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -1457,11 +1457,11 @@ gh release download v1.0.0 --archive tar.gz --dir dist/
 gh attestation verify dist/*.tar.gz --repo owner/<repo>
 ```
 
-**When NOT to use:** Repos that produce compiled binaries should use Cosign signing (Section G) instead. Release archive attestation is for source-only distributions where the GitHub-generated tarball/zip IS the release artifact.
+**When NOT to use:** Repos that produce compiled binaries should use Cosign signing (Section G. Release with Cosign) instead. Release archive attestation is for source-only distributions where the GitHub-generated tarball/zip IS the release artifact.
 
 #### E–F. Vulnerability Scanning + License Compliance
 
-**Now combined into the `compliance` job above (Section C).** Previously separate `vuln-scan` and `license-check` jobs, consolidated 2026-03-25 to save 2 billable minutes per push (each job is billed minimum 1 minute).
+**Now combined into the `compliance` job above (Section C. Compliance).** Previously separate `vuln-scan` and `license-check` jobs, consolidated 2026-03-25 to save 2 billable minutes per push (each job is billed minimum 1 minute).
 
 #### G. Release with Cosign (forge only)
 
@@ -1477,13 +1477,13 @@ For repos that produce binaries, add `.github/workflows/release.yml` triggered o
 | Layer | Tool | Applies to | What it proves |
 |-------|------|-----------|----------------|
 | SBOM | Syft (anchore/sbom-action) | All repos with deps | What dependencies are inside |
-| Release attestation | GitHub (attest-build-provenance) | Source-only repos (Section D) | Source archives built by CI, not tampered |
+| Release attestation | GitHub (attest-build-provenance) | Source-only repos (Section D. Release Archive Attestation) | Source archives built by CI, not tampered |
 | Signature | Cosign (keyless via Sigstore) | Binary repos only | Binary integrity (not tampered post-build) |
 | Binary attestation | GitHub (attest-build-provenance) | Binary repos only | Who built it and how |
 
 **Requires:** GitHub Team plan or public repo for all attestation features.
 
-#### H. _(Reserved — previously SSH Signing setup, moved to Section 3)_
+#### H. _(Reserved — previously SSH Signing setup, moved to Section M. Commit Signing with SSH)_
 
 #### I. Semantic Release + Commitlint (open-source repos)
 
@@ -1544,10 +1544,10 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 20
       - name: Release
@@ -1574,11 +1574,11 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 20
       - run: npm install @commitlint/cli @commitlint/config-conventional
@@ -1643,7 +1643,7 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Run Scorecard
@@ -1806,7 +1806,7 @@ git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
 
 CI backstop for security checks that seatbelt (or local hooks) runs at commit time. Defense-in-depth: catches issues from commits that bypass local hooks (e.g., `SKIP_SEATBELT=1`, no seatbelt installed, direct push from another machine).
 
-**Workflow** (`.github/workflows/security.yml`) — uses Section 2 hardening patterns (paths, concurrency, permissions, defaults, timeouts):
+**Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (paths, concurrency, permissions, defaults, timeouts):
 
 ```yaml
 name: Security
@@ -1854,10 +1854,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@<SHA> # v2.16.0
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@<SHA> # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Check for compliance job
@@ -1871,7 +1871,7 @@ jobs:
           fi
       - name: Scan dependencies
         if: steps.check.outputs.skip != 'true'
-        uses: aquasecurity/trivy-action@<SHA> # v0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           scan-type: fs
           scanners: vuln
@@ -1887,10 +1887,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@<SHA> # v2.16.0
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@<SHA> # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Install semgrep
@@ -1906,10 +1906,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@<SHA> # v2.16.0
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@<SHA> # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Install checkov
@@ -1925,10 +1925,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@<SHA> # v2.16.0
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
-      - uses: actions/checkout@<SHA> # v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Verify SHA pinning
@@ -1966,7 +1966,7 @@ jobs:
           fi
 ```
 
-**Required file:** `.github/scripts/check-pinned-uses.sh` — see Section 2 for the script.
+**Required file:** `.github/scripts/check-pinned-uses.sh` — see B2. Workflow Hardening for the script.
 
 **Key points:**
 - Separate from `compliance` job — compliance handles supply-chain (SBOM, licenses, dep vulns); security handles code/config scanning
@@ -2036,7 +2036,7 @@ This complements the CI grep check (catches at PR time) and pinact (auto-fixes o
 
 Pin → detect → fix → **upgrade** → local catch. Without Dependabot, SHA-pinned actions never get updated and workflows slowly go stale.
 
-Dependabot config for `github-actions` ecosystem (already in Section L):
+Dependabot config for `github-actions` ecosystem (already in Section L. Dependabot):
 ```yaml
 - package-ecosystem: "github-actions"
   directory: "/"
@@ -2156,9 +2156,9 @@ done
 | `error: Load key: incorrect passphrase` on commit | SSH key not loaded in agent | `ssh-add --apple-use-keychain <your-key>` (macOS) or `ssh-add <your-key>` (Linux) |
 | Commits show "Unverified" on GitHub | SSH key not added as Signing Key | GitHub Settings > SSH keys > New SSH key > Key type: "Signing Key" |
 | `Unpinned GitHub Actions detected` in CI | AI-generated workflow used tag refs (`@v4`) | Run `pinact run --fix .github/workflows/*.yml` locally, or manually replace tags with full SHAs |
-| `startup_failure` on all workflows (0s, no logs) | `allowed_actions` set to `local_only` — blocks all external actions | Set `allowed_actions: selected` via API (see Section N) with `github_owned_allowed: true` + third-party patterns |
+| `startup_failure` on all workflows (0s, no logs) | `allowed_actions` set to `local_only` — blocks all external actions | Set `allowed_actions: selected` via API (see Section N. Security Scanning Backstop) with `github_owned_allowed: true` + third-party patterns |
 | 409 Conflict on `repos/OWNER/REPO/actions/permissions/selected-actions` | Org-level Actions permissions override repo-level — repo API rejects changes when org controls the setting | Use `orgs/ORG/actions/permissions/selected-actions` instead. Check org-level first: `gh api orgs/ORG/actions/permissions/selected-actions` |
-| Attest job skipped on workflow rerun after partial failure | `BEFORE_TAG == AFTER_TAG` because semantic-release already created the tag on the first run | Add rerun recovery: check if latest tag points to HEAD via `git rev-list -n 1 "$AFTER_TAG"` (see Section D template) |
+| Attest job skipped on workflow rerun after partial failure | `BEFORE_TAG == AFTER_TAG` because semantic-release already created the tag on the first run | Add rerun recovery: check if latest tag points to HEAD via `git rev-list -n 1 "$AFTER_TAG"` (see Section D. Release Archive Attestation template) |
 | `paths` + `paths-ignore` on same event causes workflow file error | GitHub may reject combining positive and negative path filters on the same trigger | Use `paths` only (positive matching) for security workflows — `paths-ignore` is redundant when not matching excluded extensions |
 | zizmor `template-injection` on `${{ needs.*.result }}` | zizmor can't distinguish internal GitHub context from user-controlled input | Use env vars: `env: RESULT: ${{ needs.job.result }}` then `echo "$RESULT"` in the run block |
 | semgrep 8+ findings on plugin/config repo | `p/security-audit` scans all files including skill markdown, YAML, and shell scripts — flags patterns that aren't app vulnerabilities | Triage findings: suppress true false positives with `# nosemgrep: <rule-id>` inline, or add `--exclude '*.md' --exclude '*.yml'` to skip non-application files. For repos with no application source code, consider `continue-on-error: true` to make semgrep advisory-only |
