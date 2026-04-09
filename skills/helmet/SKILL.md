@@ -1003,7 +1003,9 @@ Every workflow MUST include these patterns. Apply before deploying any component
 **Mandatory in every workflow file:**
 
 ```yaml
-# 1. Path filtering — skip CI for docs-only changes
+# 1. Path filtering — skip CI for docs-only changes (push only)
+# ⚠️ Do NOT add paths-ignore to pull_request when this workflow is a required
+# status check — GitHub leaves the check "Pending" on filtered-out PRs, blocking merge.
 on:
   push:
     branches: [main]
@@ -1014,21 +1016,15 @@ on:
       - 'docs/**'
       - 'LICENSE'
   pull_request:
-    # WARNING: If you later add `paths:` to this trigger, remove `paths-ignore` —
-    # do not combine both.
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE'
+    # No paths-ignore here — required status checks must always run
 
 # 2. Concurrency — cancel stale runs on same PR
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# 3. Top-level least-privilege permissions
-permissions:
-  contents: read
+# 3. Top-level deny-all — grant per-job only
+permissions: {}
 
 # 4. Explicit shell
 defaults:
@@ -1062,6 +1058,10 @@ on:
       - '**/requirements*.txt'
       - '**/Dockerfile'
       - '**/*.tf'
+      - '**/pyproject.toml'
+      - '**/uv.lock'
+      - '**/Cargo.lock'
+      - '**/Package.resolved'
       # ⚠️ Do NOT add paths-ignore here — combining paths + paths-ignore
       # on the same trigger is undefined behavior in GitHub Actions.
 ```
@@ -1083,12 +1083,13 @@ while IFS= read -r -d '' file; do
     case "$ref" in
       ./*|docker://*) continue ;;  # Local refs + docker:// exempt
     esac
-    if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
+    if [[ ! "$ref" =~ ^[^@]+@[0-9a-f]{40}$ ]]; then
       echo "::error file=$file,line=$line_no::Unpinned or invalid action/workflow ref: $ref"
       status=1
     fi
   done < <(grep -nE '^[[:space:]]*uses:[[:space:]]*[^[:space:]]+@[^[:space:]]+' "$file" || true)
-done < <(find .github/workflows .github/actions -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null)
+done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null; \
+         find .github/actions  -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null || true)
 exit $status
 ```
 
@@ -1116,6 +1117,10 @@ exit $status
             echo "| checkov | $CHECKOV |"
             echo "| zizmor | $ZIZMOR |"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$TRIVY" == "failure" || "$SEMGREP" == "failure" || "$CHECKOV" == "failure" || "$ZIZMOR" == "failure" ]]; then
+            echo "::error::One or more security scanners failed"
+            exit 1
+          fi
 ```
 
 **`pull_request` over `pull_request_target`** — never use `pull_request_target` with untrusted code. All workflows use `pull_request`.
@@ -1822,6 +1827,10 @@ on:
       - '**/requirements*.txt'
       - '**/Dockerfile'
       - '**/*.tf'
+      - '**/pyproject.toml'
+      - '**/uv.lock'
+      - '**/Cargo.lock'
+      - '**/Package.resolved'
   push:
     branches: [main]
     paths: [...]                    # Same paths as pull_request
@@ -1830,8 +1839,7 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
@@ -1842,6 +1850,8 @@ jobs:
     name: Dependency CVEs
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@<SHA> # v2.16.0
@@ -1853,26 +1863,28 @@ jobs:
       - name: Check for compliance job
         id: check
         run: |
-          if grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
+          # Only skip on push — compliance job in tests.yml is push-only,
+          # so PRs must always run trivy here for coverage.
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Trivy already covered by compliance job — skipping"
           fi
-      - name: Install trivy
-        if: steps.check.outputs.skip != 'true'
-        run: |
-          # Prefer aquasecurity/trivy-action (SHA-pinned) in CI workflows.
-          # This curl fallback is for standalone security.yml without trivy-action.
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.58.2/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin v0.58.2
-          trivy --version
       - name: Scan dependencies
         if: steps.check.outputs.skip != 'true'
-        run: trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 --skip-dirs tests .
+        uses: aquasecurity/trivy-action@<SHA> # v0.35.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          skip-dirs: tests
 
   semgrep:
     name: Code security
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@<SHA> # v2.16.0
@@ -1882,7 +1894,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install semgrep
-        run: pip install --quiet semgrep
+        run: pip install --quiet 'semgrep==1.157.0'  # Pin version — unpinned is a supply chain risk
       - name: Scan for vulnerabilities
         run: semgrep scan --config p/security-audit --error --exclude tests .
 
@@ -1890,6 +1902,8 @@ jobs:
     name: IaC misconfig
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@<SHA> # v2.16.0
@@ -1899,7 +1913,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install checkov
-        run: pip install --quiet checkov
+        run: pip install --quiet 'checkov==3.2.510'  # Pin version — unpinned is a supply chain risk
       - name: Scan for misconfigurations
         run: checkov -d . --skip-path tests --quiet --compact
 
@@ -1907,6 +1921,8 @@ jobs:
     name: Actions security
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@<SHA> # v2.16.0
@@ -1918,9 +1934,9 @@ jobs:
       - name: Verify SHA pinning
         run: bash .github/scripts/check-pinned-uses.sh
       - name: Install zizmor
-        run: pip install --quiet zizmor
+        run: pip install --quiet 'zizmor==1.23.1'  # Pin version — unpinned is a supply chain risk
       - name: Scan GitHub Actions workflows
-        run: zizmor .github/workflows/
+        run: zizmor --min-severity high --min-confidence high .github/workflows/
 
   reports:
     if: always()
@@ -1944,6 +1960,10 @@ jobs:
             echo "| checkov | $CHECKOV |"
             echo "| zizmor | $ZIZMOR |"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$TRIVY" == "failure" || "$SEMGREP" == "failure" || "$CHECKOV" == "failure" || "$ZIZMOR" == "failure" ]]; then
+            echo "::error::One or more security scanners failed"
+            exit 1
+          fi
 ```
 
 **Required file:** `.github/scripts/check-pinned-uses.sh` — see Section 2 for the script.
