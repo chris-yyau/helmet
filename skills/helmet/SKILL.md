@@ -1,15 +1,17 @@
 ---
 name: helmet
 description: >
-  Full repo onboarding — bootstraps test infrastructure (Phase A) and wires the CI/CD pipeline (Phase B).
+  Full repo onboarding — bootstraps test infrastructure (Phase A), wires the CI/CD pipeline (Phase B),
+  and generates a project CLAUDE.md (Phase C).
   Use when onboarding a new repo, setting up tests + CI from scratch, adding Codecov/pinact/SBOM/security scanning,
-  auditing pipeline completeness, fixing CI failures, or deploying pipeline changes across multiple repos.
+  auditing pipeline completeness, fixing CI failures, deploying pipeline changes across multiple repos,
+  or generating/refreshing a repo's CLAUDE.md.
   Replaces ci-pipeline-setup and test-setup.
 ---
 
 # Repo Pipeline Setup
 
-Two-phase repo onboarding: **Phase A** bootstraps test infrastructure (language detection, framework detection, test runner + coverage, smoke tests, gold-standard templates). **Phase B** wires the CI/CD pipeline (Codecov, SHA pinning, SBOM, vulnerability scanning, security backstop, Dependabot, commit signing, OpenSSF Scorecard, CodeScene, GitGuardian).
+Three-phase repo onboarding: **Phase A** bootstraps test infrastructure (language detection, framework detection, test runner + coverage, smoke tests, gold-standard templates). **Phase B** wires the CI/CD pipeline (Codecov, SHA pinning, SBOM, vulnerability scanning, security backstop, Dependabot, commit signing, OpenSSF Scorecard, CodeScene, GitGuardian). **Phase C** generates a project CLAUDE.md by analyzing the repo's tech stack, structure, commands, conventions, and CI configuration — so every new Claude Code session starts with full project context.
 
 ## When to Use
 
@@ -30,6 +32,12 @@ Two-phase repo onboarding: **Phase A** bootstraps test infrastructure (language 
 - Deploying OpenSSF Scorecard or SECURITY.md
 - Setting up CodeScene behavioral code analysis on PRs
 - Adding security scanning CI backstop (Semgrep, Checkov, Zizmor) for defense-in-depth
+
+**Phase C (CLAUDE.md):**
+- Onboarding a new repo — auto-runs after Phase B completes
+- Repo has no `.claude/CLAUDE.md` or it contains only boilerplate
+- User asks to generate or refresh a project's CLAUDE.md
+- Significant infrastructure changes (new test framework, CI additions) made CLAUDE.md stale
 
 ---
 
@@ -859,7 +867,8 @@ Show a summary of everything that happened:
 **Coverage baseline:** 12.3%
 
 **Next steps:**
--- Proceed to Phase B to wire CI/CD pipeline
+- Proceed to Phase B to wire CI/CD pipeline
+- Phase C (CLAUDE.md) will auto-run after Phase B completes
 - Use `busdriver:tdd` when ready to write tests for specific modules
 ```
 
@@ -2553,3 +2562,178 @@ done
 - **Actions permissions must be `selected` not `local_only`** — `allowed_actions: "local_only"` silently causes `startup_failure` on all workflows using external actions (no logs, no jobs, 0s duration). Configure `allowed_actions: selected` with `github_owned_allowed: true` + explicit third-party patterns BEFORE deploying workflows. Verify with `gh api repos/OWNER/REPO/actions/permissions`. Added 2026-03-27
 - **Security workflow uses `paths` only, no `paths-ignore`** — combining `paths` + `paths-ignore` on the same event trigger may cause GitHub to reject the workflow with a generic "workflow file issue" error. Since positive `paths` matching already excludes unmatched extensions (like `.md`), `paths-ignore` is redundant. Added 2026-03-27
 - **Reports job uses env vars for `${{ needs.*.result }}`** — zizmor flags inline `${{ needs.job.result }}` expressions as template-injection (low confidence, false positive — values are GitHub-internal). Using `env:` block satisfies the audit with zero behavioral change. Added 2026-03-27
+
+---
+
+# Phase C: CLAUDE.md Generation
+
+
+Generate a `.claude/CLAUDE.md` file so every new Claude Code session starts with full project context. Runs automatically after Phase B completes during onboarding, or standalone when refreshing a stale CLAUDE.md.
+
+## When to Use
+
+- After Phase A + B onboarding completes (auto-triggered)
+- Repo has no `.claude/CLAUDE.md`
+- Existing CLAUDE.md is boilerplate (only version sync or empty)
+- User asks to refresh CLAUDE.md after significant changes
+
+## C1. Analysis
+
+Gather project metadata from what already exists. Do NOT ask the user — everything is derivable.
+
+### C1a. Tech Stack
+
+Read config files to determine languages, frameworks, and tooling:
+
+| Source | Extract |
+|--------|---------|
+| `package.json` | Language (TS/JS), dependencies, scripts (`test`, `build`, `lint`, `dev`, `start`) |
+| `go.mod` | Language (Go), module path |
+| `Cargo.toml` | Language (Rust), crate name, dependencies |
+| `pyproject.toml` / `setup.py` / `requirements.txt` | Language (Python), framework, dependencies |
+| `Package.swift` / `*.xcodeproj` | Language (Swift), platform targets |
+| `*.sln` / `*.csproj` | Language (C#), .NET version |
+| `build.gradle.kts` / `pom.xml` | Language (Kotlin/Java), framework |
+| `.claude-plugin/plugin.json` | Claude Code plugin (name, version, description) |
+
+### C1b. Project Structure
+
+Map the top-level directory tree. For each directory, note its purpose:
+
+```bash
+ls -1 <repo-root>
+```
+
+Count key assets where relevant (e.g., number of skills, agents, hooks, tests, workflows).
+
+### C1c. Commands
+
+Extract runnable commands from:
+- `package.json` scripts (npm/yarn/pnpm)
+- `Makefile` targets
+- `Taskfile.yml` tasks
+- `scripts/` directory (executable shell/JS/Python scripts)
+- `go generate` directives
+- `cargo` subcommands in CI
+
+### C1d. CI Configuration
+
+Read `.github/workflows/*.yml` to document:
+- Workflow names and triggers
+- What each workflow does (one line)
+- Required secrets or environment variables
+
+### C1e. Conventions
+
+Detect from existing files:
+- Commit format (commitlint config, `.releaserc.json`)
+- Linting (ESLint, Prettier, ShellCheck, gofmt, rustfmt, etc.)
+- Test patterns (test file location, naming, framework)
+- Version management (`.version-bump.json`, semantic-release)
+- Hook enforcement (hooks.json, gate scripts)
+
+### C1f. Gotchas
+
+Identify non-obvious patterns that would trip up a new session:
+- Gate scripts that block commits/PRs (and their escape hatches)
+- Files that must stay in sync (version manifests)
+- Environment variables required for local dev
+- Private repo constraints (no external collaborators, local tooling preference)
+
+## C2. Generation
+
+Write `.claude/CLAUDE.md` with this structure:
+
+```markdown
+# <Project Name>
+
+<One-line description from package.json, plugin.json, Cargo.toml, etc.>
+
+## Tech Stack
+
+- **Language:** <detected languages>
+- **Framework:** <if applicable>
+- **Runtime:** <Node, Deno, Bun, Go, etc.>
+- **Package manager:** <npm, pnpm, yarn, cargo, pip, etc.>
+- **Linting:** <detected linters>
+- **Commit format:** <conventional commits, etc.>
+
+## Project Structure
+
+\```
+<directory tree with counts and purposes>
+\```
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `npm test` | ... |
+| `npm run build` | ... |
+| ... | ... |
+
+## CI Workflows
+
+| Workflow | Trigger | What it does |
+|----------|---------|-------------|
+| ... | ... | ... |
+
+## Conventions
+
+- <bullet list of detected conventions>
+
+## Version Sync (if applicable)
+
+<version management details if .version-bump.json or similar exists>
+```
+
+### Generation Rules
+
+- **Only include sections with content.** Skip "Commands" if there are no scripts. Skip "CI Workflows" if there are no workflow files.
+- **Be specific, not generic.** Write "ShellCheck for `hooks/gate-scripts/*.sh`" not "linting is configured."
+- **Include counts.** Write "204 skill definitions" not "many skills."
+- **Document escape hatches.** If gate scripts block operations, list how to bypass them.
+- **No opinions.** Document what IS, not what should be. This is a factual project map.
+- **Keep it under 100 lines.** CLAUDE.md is loaded into every conversation — bloat wastes context tokens.
+
+## C3. Verification
+
+After writing, verify:
+- [ ] `.claude/` directory exists (create if needed)
+- [ ] CLAUDE.md accurately reflects current state (spot-check 3 claims against actual files)
+- [ ] No secrets or credentials leaked into CLAUDE.md
+- [ ] File is under 100 lines
+
+## C4. Refresh Mode
+
+When updating an existing CLAUDE.md (not generating from scratch):
+
+1. Read current `.claude/CLAUDE.md`
+2. Run C1 analysis
+3. Diff current content against analysis results
+4. Update only sections that have drifted — preserve manual additions the user may have made
+5. Report what changed
+
+**Do NOT overwrite the entire file during refresh.** Users may have added custom sections (e.g., "Things to avoid", project-specific notes). Merge, don't replace.
+
+## Phase C Complete: CLAUDE.md
+
+Report format:
+```
+✅ Phase C complete — .claude/CLAUDE.md generated
+
+**Sections:** <list of sections written>
+**Lines:** <line count>
+**Refresh or new:** <new | refreshed — N sections updated>
+
+This file is loaded automatically at the start of every Claude Code session.
+To refresh later: run `/helmet` with Phase C only, or manually edit .claude/CLAUDE.md.
+```
+
+## Key Decisions
+
+- **Phase C runs last** — it needs Phase A (test info) and Phase B (CI info) to generate complete content. Running it earlier would miss CI workflows that Phase B just created
+- **Under 100 lines** — CLAUDE.md is context tax on every conversation. Dense and factual beats comprehensive and long
+- **Refresh preserves manual edits** — users add custom sections. Diff-and-merge, don't overwrite
+- **No opinions, only facts** — CLAUDE.md documents what IS, not best practices or recommendations. Those belong in rules/ or skills/
+- **Standalone invocable** — Phase C can run independently of A+B for repos that already have test + CI infrastructure but no CLAUDE.md
