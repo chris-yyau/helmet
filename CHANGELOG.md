@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/chris-yyau/helmet/compare/v1.4.2...v1.5.0) (2026-04-09)
+
+
+### Features
+
+* auto-set CODECOV_TOKEN secret during helmet onboarding ([#8](https://github.com/chris-yyau/helmet/issues/8)) ([3171294](https://github.com/chris-yyau/helmet/commit/3171294dc0551b936806b74fde99579b98ccdd3d))
+
 ## [1.4.2](https://github.com/chris-yyau/helmet/compare/v1.4.1...v1.4.2) (2026-04-09)
 
 
