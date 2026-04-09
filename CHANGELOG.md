@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/chris-yyau/helmet/compare/v1.5.0...v1.6.0) (2026-04-09)
+
+
+### Features
+
+* add Phase C (CLAUDE.md generation) to helmet onboarding skill ([#9](https://github.com/chris-yyau/helmet/issues/9)) ([59c4bba](https://github.com/chris-yyau/helmet/commit/59c4bba22d9599e90b54cc5259bc9f8ee0f28ddb))
+
 # [1.5.0](https://github.com/chris-yyau/helmet/compare/v1.4.2...v1.5.0) (2026-04-09)
 
 
