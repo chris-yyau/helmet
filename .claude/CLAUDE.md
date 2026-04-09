@@ -34,7 +34,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 |----------|---------|-------------|
 | `tests.yml` | PR | Version drift detection + commitlint |
 | `security.yml` | Push + PR | Semgrep, Checkov, Zizmor, Trivy scanners |
-| `pinact.yml` | Push to main | Auto-pin GitHub Actions to SHA |
+| `pinact.yml` | Push to main (`.github/workflows/**` paths only) | Auto-pin GitHub Actions to SHA |
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 
