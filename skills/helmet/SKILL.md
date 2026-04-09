@@ -952,7 +952,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
 | Release config | `[ -f .releaserc.json ]` | File exists (N/A for non-release repos) |
 | Commitlint config | `[ -f commitlint.config.js ]` | File exists (N/A for non-release repos) |
-| CodeScene config | `[ -d .codescene ]` | Directory exists (N/A if CodeScene App not installed) |
+| CodeScene config | `[ -f .codescene/custom-quality-gates.json ]` | File exists (N/A if CodeScene App not installed) |
 
 **Codecov detection logic:**
 1. Has test script (`"test"` in package.json / Makefile `test:` target / `go test` / `cargo test`) AND coverage config (`codecov.yml`, `.coveragerc`, vitest coverage config) -> **wire Codecov**
@@ -2201,8 +2201,8 @@ Generate the config based on the detected language and framework. The config mus
     ],
     "language_specific": {
       "typescript": {
-        "file_extensions": [".ts", ".tsx"],
-        "test_patterns": ["__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx"]
+        "file_extensions": [".ts", ".tsx", ".js", ".jsx"],
+        "test_patterns": ["__tests__/**", "**/*.test.ts", "**/*.test.tsx", "**/*.test.js", "**/*.test.jsx", "**/*.spec.ts", "**/*.spec.tsx", "**/*.spec.js", "**/*.spec.jsx"]
       }
     }
   }
@@ -2235,7 +2235,7 @@ Generate the config based on the detected language and framework. The config mus
       "**/*.d.ts"
     ],
     "language_specific": {
-      "typescript": {
+      "javascript": {
         "file_extensions": [".ts", ".js"],
         "test_patterns": ["__tests__/**", "**/*.test.ts", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js"]
       }
