@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
+# Verify every uses: ref in GitHub Actions workflows is SHA-pinned (40-hex).
+# Exemptions: local actions (./) and docker:// refs.
+# Expected format: owner/action@<40-hex-sha> # vX.Y.Z (Dependabot reads the inline comment).
 set -euo pipefail
+
 status=0
 while IFS= read -r -d '' file; do
   while IFS= read -r raw; do
