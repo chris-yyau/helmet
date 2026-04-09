@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/chris-yyau/helmet/compare/v1.6.0...v1.7.0) (2026-04-09)
+
+
+### Features
+
+* add commitlint CI job, concurrency, and refresh CLAUDE.md ([#10](https://github.com/chris-yyau/helmet/issues/10)) ([17d0dba](https://github.com/chris-yyau/helmet/commit/17d0dbaadd81e555b8281d4ee630245a7bb8f5c4))
+
 # [1.6.0](https://github.com/chris-yyau/helmet/compare/v1.5.0...v1.6.0) (2026-04-09)
 
 
