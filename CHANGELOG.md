@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/chris-yyau/helmet/compare/v1.7.1...v1.8.0) (2026-04-16)
+
+
+### Features
+
+* dynamic required checks + GitHub plan caveats ([#13](https://github.com/chris-yyau/helmet/issues/13)) ([bbb127e](https://github.com/chris-yyau/helmet/commit/bbb127eaca104f14a66793cc6be17ad08aab1e18))
+
 ## [1.7.1](https://github.com/chris-yyau/helmet/compare/v1.7.0...v1.7.1) (2026-04-09)
 
 
