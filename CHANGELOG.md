@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/chris-yyau/helmet/compare/v1.9.0...v1.10.0) (2026-04-16)
+
+
+### Features
+
+* document job-level skip pattern in onboarding skill ([#15](https://github.com/chris-yyau/helmet/issues/15)) ([f01ec78](https://github.com/chris-yyau/helmet/commit/f01ec78f9be8c19f1dddd211389575d55d71d957))
+
 # [1.9.0](https://github.com/chris-yyau/helmet/compare/v1.8.0...v1.9.0) (2026-04-16)
 
 
