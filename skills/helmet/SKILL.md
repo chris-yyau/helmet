@@ -854,9 +854,9 @@ If a repo has no modules matching "good fit," skip this template — adding prop
 |----------|-------------------|-----------|---------|
 | Python | `tests/test_properties_template.py` | [Hypothesis](https://hypothesis.readthedocs.io) | `pip install hypothesis` |
 | TypeScript/JS | `__tests__/properties.test.ts` | [fast-check](https://fast-check.dev) | `npm install -D fast-check` |
-| Go | `properties_test.go` | `testing/quick` (stdlib) | built-in |
+| Go | `properties_test.go` | [rapid](https://github.com/flyingmutant/rapid) (preferred — has shrinking) or `testing/quick` (stdlib, no shrinking) | `go get -t pgregory.net/rapid` |
 | Rust | `tests/properties.rs` | [proptest](https://docs.rs/proptest) | `cargo add --dev proptest` |
-| Swift | `Tests/AppTests/PropertyTests.swift` | [SwiftCheck](https://github.com/typelift/SwiftCheck) | `.package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0")` |
+| Swift | `Tests/AppTests/PropertyTests.swift` | Pragmatic mix — see Swift template notes | See notes |
 
 **Opt-in flow:** During Phase A, after detecting language + modules, ask the user:
 > *"Does this repo have parsers, validators, serializers, crypto, state machines, or financial logic? (y/n)"*
@@ -990,75 +990,88 @@ describe('property tests', () => {
 
 </details>
 
-<details><summary>Go -- testing/quick (stdlib)</summary>
+<details><summary>Go -- rapid (preferred) or testing/quick (stdlib fallback)</summary>
+
+**Recommended: `pgregory.net/rapid`.** It provides shrinking (automatic minimization of failing inputs), stateful testing, and rich generators. `testing/quick` works but lacks shrinking — debugging failures on nested structs becomes painful.
 
 ```go
-// Package myapp_test contains property-based tests using testing/quick.
+// Package myapp_test contains property-based tests using pgregory.net/rapid.
 //
 // When to use: parsers, serializers, validators, crypto, state machines,
 // financial calculators. NOT for CRUD, HTTP glue, or pure plumbing.
 //
-// Pattern: testing/quick generates random inputs; you assert invariants.
+// Pattern: rapid generates random inputs and SHRINKS failures to minimal cases.
 // Run: go test -run TestProperty ./...
-// Install: built-in stdlib — no external dependency.
+// Install: go get -t pgregory.net/rapid
 //
-// For more advanced property testing (shrinking, stateful), consider
-// https://github.com/flyingmutant/rapid
+// For more patterns, see https://pkg.go.dev/pgregory.net/rapid
+// Fallback (stdlib, no shrinking): use testing/quick — see commented section below.
 package myapp_test
 
 import (
 	"sort"
 	"testing"
-	"testing/quick"
+
+	"pgregory.net/rapid"
 )
 
 // 1. INVARIANT -- round-trip property
 func TestPropertySerializeRoundtrip(t *testing.T) {
-	f := func(data map[string]int) bool {
+	rapid.Check(t, func(t *rapid.T) {
+		data := rapid.MapOf(rapid.String(), rapid.Int()).Draw(t, "data")
 		// encoded := serialize(data)
 		// decoded := deserialize(encoded)
-		// return reflect.DeepEqual(decoded, data)
+		// if !reflect.DeepEqual(decoded, data) {
+		//     t.Fatalf("roundtrip mismatch: got %v, want %v", decoded, data)
+		// }
 		_ = data
-		return true // Replace with real invariant
-	}
-	if err := quick.Check(f, nil); err != nil {
-		t.Error(err)
-	}
+	})
 }
 
 // 2. ORACLE -- compare custom impl against sort.Ints
 func TestPropertyCustomSortMatchesStdlib(t *testing.T) {
-	f := func(xs []int) bool {
+	rapid.Check(t, func(t *rapid.T) {
+		xs := rapid.SliceOf(rapid.Int()).Draw(t, "xs")
 		// mine := mySort(append([]int{}, xs...))
-		// reference := append([]int{}, xs...)
-		// sort.Ints(reference)
-		// return slices.Equal(mine, reference)
 		reference := append([]int{}, xs...)
 		sort.Ints(reference)
+		// if !slices.Equal(mine, reference) {
+		//     t.Fatalf("sort mismatch: got %v, want %v", mine, reference)
+		// }
 		_ = reference
-		return true
-	}
-	if err := quick.Check(f, nil); err != nil {
-		t.Error(err)
-	}
+	})
 }
 
 // 3. MODEL/STATE-MACHINE -- stack push/pop invariant
 func TestPropertyStackPushPopLIFO(t *testing.T) {
-	f := func(items []int) bool {
+	rapid.Check(t, func(t *rapid.T) {
+		items := rapid.SliceOf(rapid.Int()).Draw(t, "items")
 		// stack := NewStack[int]()
 		// for _, item := range items {
 		//     stack.Push(item)
 		//     if got := stack.Pop(); got != item {
-		//         return false
+		//         t.Fatalf("LIFO violated: push %d then pop %d", item, got)
 		//     }
 		// }
-		return true
-	}
-	if err := quick.Check(f, nil); err != nil {
-		t.Error(err)
-	}
+		_ = items
+	})
 }
+
+// ── Stdlib fallback (no shrinking) ───────────────────────────────────────────
+// If you cannot add rapid as a dependency, testing/quick from the stdlib works.
+// Failure reports show raw generated inputs (no minimization), so debugging is
+// harder — especially for maps and nested structs.
+//
+// import "testing/quick"
+//
+// func TestPropertyQuickSerializeRoundtrip(t *testing.T) {
+//     f := func(data map[string]int) bool {
+//         return reflect.DeepEqual(deserialize(serialize(data)), data)
+//     }
+//     if err := quick.Check(f, nil); err != nil {
+//         t.Error(err)
+//     }
+// }
 ```
 
 </details>
@@ -1118,7 +1131,17 @@ proptest! {
 
 </details>
 
-<details><summary>Swift -- SwiftCheck</summary>
+<details><summary>Swift -- pragmatic mix (parameterized tests + custom generators)</summary>
+
+**Swift's property-testing story is weaker than other languages.** The classic choice, SwiftCheck (`typelift/SwiftCheck`), has had no releases since 2019 and has open build failures on Swift 5.9+/6.0. Options:
+
+| Option | Status | Tradeoff |
+|--------|--------|----------|
+| **Parameterized tests** (XCTest / swift-testing) + hand-rolled generators | Stable, works with toolchain | No shrinking; manual generator code |
+| **[swift-gen](https://github.com/pointfreeco/swift-gen)** (Point-Free) | Actively maintained | Data generation only — you write the test loop yourself |
+| **SwiftCheck** | Unmaintained since 2019 | Full property API but likely fails to compile on modern Swift |
+
+The template below uses option 1 (parameterized tests + custom generators) because it works without external dependencies. Upgrade to swift-gen if you need richer combinators.
 
 ```swift
 // PROPERTY TEST TEMPLATE -- Copy this file as a starting point.
@@ -1126,48 +1149,65 @@ proptest! {
 // When to use: parsers, serializers, validators, crypto, state machines,
 // financial calculators. NOT for CRUD, UI glue, or pure plumbing.
 //
-// Pattern: SwiftCheck generates random inputs; you assert invariants.
+// Pattern: XCTest with hand-rolled random generators. No external dependency.
 // Run: swift test
-// Install: add to Package.swift:
-//   .package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0")
 //
-// For more patterns, see https://github.com/typelift/SwiftCheck
+// For richer combinators (without full property framework):
+//   .package(url: "https://github.com/pointfreeco/swift-gen", from: "0.4.0")
+// For stateful testing and advanced patterns, consider swift-testing's
+// `@Test(arguments:)` parameterized tests (Swift 5.10+).
 
 import XCTest
-import SwiftCheck
 
 // @testable import MyApp
 
 final class PropertyTests: XCTestCase {
+    private let iterations = 100
+    private var rng = SystemRandomNumberGenerator()
+
+    // Hand-rolled generators — extend as needed
+    private func randomInts(count: Int = Int.random(in: 0...50)) -> [Int] {
+        (0..<count).map { _ in Int.random(in: -1000...1000) }
+    }
+
+    private func randomString(maxLen: Int = 32) -> String {
+        let chars = "abcdefghijklmnopqrstuvwxyz "
+        let len = Int.random(in: 0...maxLen)
+        return String((0..<len).map { _ in chars.randomElement()! })
+    }
+
     // 1. INVARIANT -- round-trip property
-    func testSerializeRoundtripIsIdentity() {
-        property("serialize + deserialize is identity") <- forAll { (xs: [Int]) in
+    func testSerializeRoundtripIsIdentity() throws {
+        for _ in 0..<iterations {
+            let xs = randomInts()
             // let encoded = serialize(xs)
-            // let decoded: [Int] = deserialize(encoded) ?? []
-            // return decoded == xs
-            return xs == xs  // Replace with real invariant
+            // let decoded: [Int] = try deserialize(encoded)
+            // XCTAssertEqual(decoded, xs, "roundtrip failed for: \(xs)")
+            XCTAssertEqual(xs, xs)  // Replace with real invariant
         }
     }
 
     // 2. ORACLE -- compare custom impl against stdlib sort
     func testCustomSortMatchesStdlib() {
-        property("mySort equals Array.sorted()") <- forAll { (xs: [Int]) in
+        for _ in 0..<iterations {
+            let xs = randomInts()
             // let mine = mySort(xs)
             let reference = xs.sorted()
-            // return mine == reference
-            return reference == xs.sorted()  // Replace with real comparison
+            // XCTAssertEqual(mine, reference, "sort mismatch for: \(xs)")
+            _ = reference
         }
     }
 
     // 3. MODEL/STATE-MACHINE -- stack LIFO invariant
     func testStackPushPopIsLIFO() {
-        property("push-then-pop returns same element") <- forAll { (items: [Int]) in
+        for _ in 0..<iterations {
+            let items = randomInts(count: Int.random(in: 0...20))
             // var stack = Stack<Int>()
             // for item in items {
             //     stack.push(item)
-            //     guard stack.pop() == item else { return false }
+            //     XCTAssertEqual(stack.pop(), item, "LIFO violated after pushing \(items)")
             // }
-            return items.count >= 0  // Replace with real stack ops
+            _ = items
         }
     }
 }
