@@ -1220,7 +1220,7 @@ exit $status
 ```yaml
   reports:
     if: always()
-    needs: [trivy, semgrep, checkov, zizmor]
+    needs: [changes, trivy, semgrep, checkov, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -1937,14 +1937,19 @@ git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
 
 CI backstop for security checks that seatbelt (or local hooks) runs at commit time. Defense-in-depth: catches issues from commits that bypass local hooks (e.g., `SKIP_SEATBELT=1`, no seatbelt installed, direct push from another machine).
 
-**Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (paths, concurrency, permissions, defaults, timeouts):
+**Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (paths, concurrency, permissions, defaults, timeouts).
+
+**Required-check-compatible pattern:** If `Actions security` (zizmor) or any other scanner job from security.yml is set as a GitHub required status check, the workflow CANNOT use workflow-level `paths:` filter on the PR trigger — when path filters don't match, the workflow never starts and the required check is reported as absent, blocking merge. Instead, the workflow always starts on PRs, and a `changes` job detects security-relevant files. Scanner jobs use `if: needs.changes.outputs.security == 'true'` to skip when not needed. **GitHub treats skipped jobs as passing for required checks.** Push trigger retains path filters (no waste on docs-only main-branch pushes).
 
 ```yaml
 name: Security
 
 on:
-  pull_request:
-    paths:                          # Only run on security-relevant changes
+  pull_request:                     # No path filter — workflow always starts on PRs
+                                    # (scanner jobs skip via if: when not needed)
+  push:
+    branches: [main]
+    paths:                          # Push trigger keeps path filter (no required-check issue)
       - '.github/**'
       - '**/*.sh'
       - '**/*.js'
@@ -1962,9 +1967,6 @@ on:
       - '**/uv.lock'
       - '**/Cargo.lock'
       - '**/Package.resolved'
-  push:
-    branches: [main]
-    paths: [...]                    # Same paths as pull_request
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -1977,8 +1979,54 @@ defaults:
     shell: bash
 
 jobs:
+  # Detect whether this PR/push touches security-relevant files.
+  # Scanner jobs below skip via `if:` when false. GitHub treats skipped jobs as
+  # passing for required status checks — so scanners can safely be required.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      security: ${{ steps.filter.outputs.security }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0              # Need full history to diff against base
+          persist-credentials: false
+      - name: Detect security-relevant changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -e
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail-closed: if base SHA unavailable (fork PRs, shallow checkouts),
+          # run scanners rather than silently skipping.
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            echo "::warning::Base SHA $BASE_SHA not available — running scanners (fail-closed)"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Pipe directly to grep to avoid word-splitting on filenames with spaces.
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock|pnpm-lock|yarn\.lock|go\.sum|requirements|Dockerfile'; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+          fi
+
   trivy:
     name: Dependency CVEs
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2012,6 +2060,8 @@ jobs:
 
   semgrep:
     name: Code security
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2031,6 +2081,8 @@ jobs:
 
   checkov:
     name: IaC misconfig
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2050,6 +2102,8 @@ jobs:
 
   zizmor:
     name: Actions security
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -2071,7 +2125,7 @@ jobs:
 
   reports:
     if: always()
-    needs: [trivy, semgrep, checkov, zizmor]
+    needs: [changes, trivy, semgrep, checkov, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -2101,6 +2155,7 @@ jobs:
 
 **Key points:**
 - Separate from `compliance` job — compliance handles supply-chain (SBOM, licenses, dep vulns); security handles code/config scanning
+- **`changes` detection job + `if:` gating pattern** — workflow always starts on PRs (no path filter), scanner jobs skip when no security-relevant files changed. GitHub treats skipped jobs as passing for required checks, so `Actions security` (zizmor) can safely be set as a required status check via branch protection. See B1b for the `gh api` command to set required checks
 - Runs on push AND PRs (unlike compliance which is push-only) — catches issues before merge
 - `tests/` excluded from semgrep and checkov to avoid false positives on test fixtures
 - `pip install` for Python tools (semgrep, checkov, zizmor) — no additional GitHub Actions to pin/maintain
@@ -2537,6 +2592,7 @@ done
 - **Job-level permissions** over top-level — when any job needs extra permissions, move ALL permissions to job-level to avoid accidental privilege escalation
 - **Attestations require GitHub Team or public repos** — `attest-build-provenance` fails on private repos with free plan ("Feature not available for the org"). Add attestations later when repos go public or plan is upgraded
 - **Environment deployment protection rules require Team plan or higher for private repos** — `environment:` blocks in workflows can scope secrets on any plan, but required reviewers and wait timers only work on public repos (any plan) or private repos on Team/Enterprise plans. Free plan private repos cannot use them — use branch protection required checks as the merge gate instead
+- **Path-filtered workflows cannot be required checks** — when a workflow's `on: pull_request: paths:` filter doesn't match, the workflow never starts and GitHub reports the required check as absent, blocking merge. Use the `changes` detection job pattern in security.yml: workflow always starts, scanner jobs skip via `if:` when no relevant files changed. GitHub treats skipped jobs as passing for required checks
 - **Cosign only for binary releases** (forge) — web apps have no release artifact to sign
 - **Release archive attestation for non-binary repos** — source-only repos (shell projects, config repos) attest GitHub-generated tarball/zip archives on release. Separate `attest` job with isolated `id-token: write` + `attestations: write` permissions — keeps Sigstore OIDC scope away from the `npx`-heavy release job. Tag validated against semver regex, archives integrity-checked with `tar tzf`/`unzip -t` before attestation. `github.repository` passed via env var (not inline `${{ }}`) to prevent template injection. Includes rerun recovery: `elif` branch checks if latest tag points to HEAD via `git rev-list`, so re-running the workflow after a transient attest failure re-triggers attestation. Added 2026-03-30
 - **Org-level Actions permissions override repo-level** — `gh api repos/OWNER/REPO/actions/permissions/selected-actions` returns 409 Conflict when the org controls the setting. Always check org-level first: `gh api orgs/ORG/actions/permissions/selected-actions`. If org-level is set, modify it there. Added 2026-03-30
