@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/chris-yyau/helmet/compare/v1.12.0...v1.12.1) (2026-04-16)
+
+
+### Bug Fixes
+
+* **security:** add harden-runner to reports summary job ([#21](https://github.com/chris-yyau/helmet/issues/21)) ([782ff69](https://github.com/chris-yyau/helmet/commit/782ff69bc2525924c89557269cf851f1a226100e))
+
 # [1.12.0](https://github.com/chris-yyau/helmet/compare/v1.11.0...v1.12.0) (2026-04-16)
 
 
