@@ -921,6 +921,7 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **Checkov CI** | IaC misconfiguration CI backstop — Dockerfile, Terraform, k8s, workflows (push+PR) | `checkov` job in `security.yml` |
 | **Zizmor CI** | GitHub Actions workflow security CI backstop (push+PR) | `zizmor` job in `security.yml` |
 | **CodeScene** | Behavioral code analysis — code health, hotspots, complexity on PRs (student account) | GitHub App + `.codescene/custom-quality-gates.json` |
+| **Admin Bypass Audit** | Detect direct-push bypass of required checks — creates `admin-bypass` issue (repos with `enforce_admins: false`) | `.github/workflows/bypass-audit.yml` |
 
 ## Default Behavior: Audit Current Repo
 
@@ -2476,6 +2477,107 @@ Generate the config based on the detected language and framework. The config mus
 
 **N/A condition:** If the CodeScene App is not installed on the org, mark as N/A in the audit.
 
+#### P. Admin Bypass Audit (all repos with `enforce_admins: false`)
+
+Detects commits pushed directly to `main` without a PR — i.e., admin bypasses of the required-status-checks gate. Creates a GitHub Issue with label `admin-bypass` and emits a workflow warning annotation.
+
+**Why this exists:** With `enforce_admins: false` (solo-dev default), GitHub branch protection does NOT apply to repo admins. Any "BLOCK" gate enforced by branch protection is advisory for admins (direct push + `gh pr merge --admin` both bypass). This workflow makes those bypasses visible and auditable after the fact, so the honest "BLOCK vs advisory" labeling can be operationalized instead of left as documentation.
+
+**Workflow** (`.github/workflows/bypass-audit.yml`):
+
+```yaml
+name: Admin Bypass Audit
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: bypass-audit-${{ github.sha }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      issues: write        # create audit issues
+      pull-requests: read  # look up PR for commit SHA
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+      - name: Detect direct-push bypass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -e
+          # Skip automated actors
+          if [[ "$ACTOR" == *"[bot]"* ]] || [[ "$ACTOR" == "github-actions" ]]; then
+            echo "Skipping audit — automated actor: $ACTOR"; exit 0
+          fi
+          # Skip release commits — `chore(release)` as first-line prefix,
+          # `[skip ci]` anywhere in full commit message.
+          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
+          if [[ "$FIRST_LINE" == "chore(release)"* ]]; then
+            echo "Skipping audit — release commit"; exit 0
+          fi
+          if printf '%s' "$COMMIT_MSG" | grep -qF '[skip ci]'; then
+            echo "Skipping audit — CI-skip marker"; exit 0
+          fi
+          # Look up PRs — distinguish "API OK, no PR" (bypass) from "API failed" (skip).
+          # Never treat gh api failure as bypass — that creates false-positive issues.
+          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
+            echo "::warning::gh api failed — skipping audit"; exit 0
+          fi
+          PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null || echo "0")
+          if [ "$PR_COUNT" != "0" ]; then
+            echo "No bypass — commit came from PR"; exit 0
+          fi
+          # No PR → direct push = bypass
+          echo "::warning::Admin bypass: direct push to main by $ACTOR ($COMMIT_SHA)"
+          gh label create "admin-bypass" --color "d93f0b" \
+            --description "Commit bypassed required status checks" \
+            --repo "$REPO" 2>/dev/null || true
+          # ... (body composition + gh issue create, see full template)
+```
+
+See `.github/workflows/bypass-audit.yml` in the helmet repo for the full template with issue body composition.
+
+**Detection logic:**
+1. If actor is a bot (contains `[bot]` or equals `github-actions`) → skip
+2. If commit message first line starts with `chore(release)` → skip (conventional commit)
+3. If full commit message contains `[skip ci]` anywhere → skip
+4. Look up PRs associated with commit SHA via `/commits/{sha}/pulls` API
+5. **If `gh api` fails (rate limit, transient error) → log warning, skip** (do NOT create false-positive issue)
+6. If API succeeded and zero associated PRs → direct-push bypass → warn + create issue
+7. Otherwise → commit came from PR → no alert
+
+**Known limitations:**
+- `gh pr merge --admin` DOES associate the merge commit with a PR, so this workflow won't detect that vector. Adding check-runs inspection would catch it but requires `administration: read` which is an elevated permission.
+- Timing: this workflow runs AFTER the push lands, so it's detective control, not preventive. The gate already allowed the push; the audit surfaces it.
+- Automated actors are globally skipped. If a compromised bot were to push directly to main, this workflow would not alert. Acceptable for solo dev; not acceptable for team repos.
+
+**Key points:**
+- **Creates a permanent audit trail** — GitHub Issues are durable, searchable, and trigger notifications. Step-summary-only alerts get forgotten.
+- **Label `admin-bypass`** is auto-created on first run (idempotent). Enables filtering: `gh issue list --label admin-bypass`.
+- **Uses env-var pattern** for all user-controlled inputs (`COMMIT_MSG`, `ACTOR`) — never interpolates `${{ github.event.* }}` directly into shell commands (workflow injection prevention).
+- **Honest about scope** — see Key Decisions section on what this does and doesn't catch.
+
+**N/A condition:** If `enforce_admins: true` on the repo's branch protection, this workflow provides no value (admins can't bypass in the first place). Safe to omit.
+
 ### B4. Multi-Repo Deployment
 
 ```bash
@@ -2591,7 +2693,7 @@ done
 - **SBOM on push only** (not PRs) — no point generating dependency lists for unmerged code
 - **Separate `sbom` job** with own permissions — test job stays `contents: read` only (least-privilege)
 - **Job-level permissions** over top-level — when any job needs extra permissions, move ALL permissions to job-level to avoid accidental privilege escalation
-- **Attestations require GitHub Team or public repos** — `attest-build-provenance` fails on private repos with free plan ("Feature not available for the org"). Add attestations later when repos go public or plan is upgraded
+- **Attestations require public repos OR Enterprise Cloud for private repos** — `attest-build-provenance` is available on public repos (any plan) or private/internal repos on GitHub Enterprise Cloud. Free/Pro/**Team** private repos fail with "Feature not available for the org" — use Cosign keyless signing only. Add GitHub-native attestations later if the repo goes public or plan is upgraded to Enterprise Cloud
 - **Environment deployment protection rules require Team plan or higher for private repos** — `environment:` blocks in workflows can scope secrets on any plan, but required reviewers and wait timers only work on public repos (any plan) or private repos on Team/Enterprise plans. Free plan private repos cannot use them — use branch protection required checks as the merge gate instead
 - **Path-filtered workflows cannot be required checks** — when a workflow's `on: pull_request: paths:` filter doesn't match, the workflow never starts and GitHub reports the required check as absent, blocking merge. Use the `changes` detection job pattern in security.yml: workflow always starts, scanner jobs skip via `if:` when no relevant files changed. GitHub treats skipped jobs as passing for required checks
 - **Cosign only for binary releases** (forge) — web apps have no release artifact to sign
