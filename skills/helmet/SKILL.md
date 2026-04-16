@@ -1076,47 +1076,43 @@ EOF
 
 # ── Branch protection (required for safe auto-merge) ──
 # Without this, auto-merge merges PRs immediately without waiting for CI.
-#
-# Step 1: Discover job display names from deployed workflows.
+# IMPORTANT: Run this AFTER deploying workflows and triggering at least one run.
+# GitHub requires a check to have at least one recorded run before accepting it as required.
+
+# Step 1: Discover actual check names from a recent workflow run.
 # GitHub uses the `name:` field as the check name; falls back to the job key if no name is set.
-REQUIRED_CHECKS=()
-ADVISORY_CHECKS=()
-for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
-  [ -f "$wf" ] || continue
-  # Extract job entries: lines matching "    name: <value>" under a jobs: block,
-  # or bare job keys (2-space indent under jobs:) when no name: is set.
-  # This is a heuristic — complex workflows may need manual adjustment.
-done
+ALL_CHECKS=$(gh api "repos/$OWNER/$REPO/commits/$(git rev-parse HEAD)/check-runs" \
+  --jq '.check_runs[].name' | sort -u)
+echo "Discovered checks:"
+echo "$ALL_CHECKS"
 
 # Step 2: Categorize checks.
 # Default policy: test + lint + security-critical → required; scanning + reporting → advisory.
-# Common required checks (adapt to match actual job names found above):
-#   - test jobs: "test", "test (ubuntu-latest)", "test (macos-latest)", "unit-tests", "integration-tests"
-#   - lint jobs: "commitlint", "lint", "typecheck"
-#   - security-critical: "Actions security" (zizmor), "version-drift"
-# Common advisory checks (valuable but may have false positives):
-#   - "Code security" (semgrep), "Dependency CVEs" (trivy), "IaC misconfig" (checkov)
-#   - "scorecard", "reports", "pin" (pinact)
+# Required (examples): "test", "test (ubuntu-latest)", "commitlint", "Actions security" (zizmor), "version-drift"
+# Advisory (examples): "Code security" (semgrep), "Dependency CVEs" (trivy), "IaC misconfig" (checkov)
 #
-# Present the categorized list to the user for confirmation before applying.
+# Present the discovered list to the user for confirmation before applying.
+# User confirms which checks should be required.
 
 # Step 3: Apply via API.
-# Build the contexts array from confirmed required checks.
-# Example (replace with actual discovered names):
-CONTEXTS='["test (ubuntu-latest)", "test (macos-latest)", "commitlint"]'
+# Build the contexts JSON array from confirmed required checks using jq (handles escaping).
+CONTEXTS=$(jq -nc '$ARGS.positional' --args "test (ubuntu-latest)" "test (macos-latest)" "commitlint")
 
 gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT \
-  --input - <<EOF
+  --input - <<'EOF'
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": $CONTEXTS
+    "contexts": CONTEXTS_PLACEHOLDER
   },
   "enforce_admins": false,
   "required_pull_request_reviews": null,
   "restrictions": null
 }
 EOF
+# NOTE: In practice, use jq to build the full JSON payload:
+# jq -n --argjson ctx "$CONTEXTS" '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
+#   | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
 
 # ── Verify ──
 gh api "repos/$OWNER/$REPO" --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, allow_update_branch, delete_branch_on_merge, allow_auto_merge}'
