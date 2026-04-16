@@ -3326,7 +3326,7 @@ Busdriver's gates write per-project JSONL logs. Once the repo accumulates a few 
   - `tail .claude/bypass-log.jsonl` — skip events (litmus + seatbelt). Event types: `skip-review-consumed`, `skip-pr-grind-consumed`, `review-skipped-none`, `narrative-fallback-triggered`, `short-circuit-pass`, `pr-fast-bypass`, `seatbelt-skip`
 - **Dashboard script** (optional — provided by busdriver, not this repo):
   - `bash /path/to/busdriver/scripts/litmus-metrics-report.sh` — pass rate, severity distribution, iteration trends
-  - Actual path depends on where busdriver is installed (check `$BUSDRIVER_ROOT` or `~/.claude/plugins/marketplaces/busdriver/`). The script reads `.claude/review-metrics.jsonl` in the current working directory.
+  - Typical install path: `~/.claude/plugins/marketplaces/busdriver/scripts/litmus-metrics-report.sh` (adjust if your marketplaces directory differs). The script reads `.claude/review-metrics.jsonl` in the current working directory.
 
 Review monthly to spot drift: scanners you keep bypassing, reviews that consistently FAIL on first iteration, or persistent short-circuit patterns.
 ```
