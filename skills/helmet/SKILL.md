@@ -278,6 +278,12 @@ test-coverage:
 
 ## A3. Output Files
 
+Generate up to three test files per detected language:
+
+1. **Smoke test** (always) — proves the app can be imported.
+2. **Gold-standard template test** (always) — heavily commented pattern for example-based tests.
+3. **Property test template** (opt-in) — ask the user first: *"Does this repo have parsers, validators, serializers, crypto, state machines, or financial logic?"* If yes, generate; if no, skip and don't install the framework.
+
 ### A. Smoke Test
 
 Generate one real, runnable test that proves the app can be imported without crashing.
@@ -819,6 +825,365 @@ Adapt all import paths and function names to match the actual codebase. The temp
 
 For tests that demonstrate a real pattern (e.g., importing the app, hitting a real endpoint), use actual assertions -- only use placeholders for commented-out examples the developer hasn't wired up yet.
 
+### C. Property-Based Test Template (Optional)
+
+Property-based testing complements example-based testing by generating random inputs and checking that **invariants** hold across all of them. It catches edge cases that example tests miss (empty strings, unicode boundaries, integer overflow, concurrent-operation orderings).
+
+**When to use property tests:**
+
+| Good fit | Poor fit |
+|----------|----------|
+| **Parsers / serializers** — round-trip invariants (`parse(serialize(x)) == x`) | CRUD endpoints / HTTP glue |
+| **Validators** — rejected inputs stay rejected after canonicalization | UI rendering logic |
+| **Crypto / hashing** — output length, determinism, collision properties | Database migrations |
+| **State machines** — sequences of operations preserve invariants | Configuration loaders |
+| **Financial calculators** — commutative / associative / zero-sum properties | Pure plumbing / pass-throughs |
+| **Sort / search / data structures** — algorithmic invariants | Pure presentation-layer code |
+
+If a repo has no modules matching "good fit," skip this template — adding property tests to CRUD handlers is noise, not signal.
+
+**Three gold-standard property patterns** each template demonstrates:
+
+1. **Invariant** — a property that always holds (`reverse(reverse(x)) == x`, `parse(serialize(x)) == x`)
+2. **Oracle** — compare new implementation against a simple reference (`my_sort(xs) == sorted(xs)`)
+3. **Model/state-machine** — a sequence of operations preserves a higher-level invariant (`push then pop on stack returns same element`)
+
+**File placement:**
+
+| Language | Property test file | Framework | Install |
+|----------|-------------------|-----------|---------|
+| Python | `tests/test_properties_template.py` | [Hypothesis](https://hypothesis.readthedocs.io) | `pip install hypothesis` |
+| TypeScript/JS | `__tests__/properties.test.ts` | [fast-check](https://fast-check.dev) | `npm install -D fast-check` |
+| Go | `properties_test.go` | `testing/quick` (stdlib) | built-in |
+| Rust | `tests/properties.rs` | [proptest](https://docs.rs/proptest) | `cargo add --dev proptest` |
+| Swift | `Tests/AppTests/PropertyTests.swift` | [SwiftCheck](https://github.com/typelift/SwiftCheck) | `.package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0")` |
+
+**Opt-in flow:** During Phase A, after detecting language + modules, ask the user:
+> *"Does this repo have parsers, validators, serializers, crypto, state machines, or financial logic? (y/n)"*
+>
+> If yes → generate property test template.
+> If no → skip; add no framework dependency.
+
+Default is **no** — don't install framework dependencies speculatively.
+
+<details><summary>Python -- Hypothesis</summary>
+
+```python
+"""
+PROPERTY TEST TEMPLATE -- Copy this file as a starting point.
+
+When to use: parsers, serializers, validators, crypto, state machines,
+financial calculators. NOT for CRUD, HTTP glue, or pure plumbing.
+
+Pattern: Hypothesis generates random inputs; you assert invariants.
+Run: pytest tests/test_properties_template.py
+Install: pip install hypothesis
+
+For more patterns, see https://hypothesis.readthedocs.io/en/latest/quickstart.html
+"""
+from hypothesis import given, strategies as st
+
+# from your_module import serialize, deserialize, validate, canonicalize
+
+
+# 1. INVARIANT -- round-trip property: parse(serialize(x)) == x
+@given(st.dictionaries(st.text(), st.integers()))
+def test_serialize_roundtrip_is_identity(data):
+    """Serializing then parsing should always return the original."""
+    # assert deserialize(serialize(data)) == data
+    pass  # Replace with your module's serialize/deserialize
+
+
+# 2. ORACLE -- compare implementation to a known-correct reference
+@given(st.lists(st.integers()))
+def test_custom_sort_matches_python_sorted(xs):
+    """Your sort should match Python's built-in sorted()."""
+    # assert my_sort(list(xs)) == sorted(xs)
+    pass
+
+
+# 3. MODEL/STATE-MACHINE -- sequences of ops preserve an invariant
+@given(st.lists(st.integers()))
+def test_push_then_pop_returns_same_element(items):
+    """Stack push/pop is a two-way mapping for each element."""
+    # stack = Stack()
+    # for item in items:
+    #     stack.push(item)
+    #     assert stack.pop() == item
+    pass
+
+
+# Shrinking example -- Hypothesis will minimize a failing input.
+# Uncomment to see: the test will "fail" with a minimal counterexample.
+# @given(st.lists(st.integers()))
+# def test_intentionally_fails_to_show_shrinking(xs):
+#     assert sum(xs) < 1_000_000  # Shrinker finds [1_000_000] as minimal fail
+```
+
+</details>
+
+<details><summary>TypeScript/JavaScript -- fast-check</summary>
+
+```typescript
+/**
+ * PROPERTY TEST TEMPLATE -- Copy this file as a starting point.
+ *
+ * When to use: parsers, serializers, validators, crypto, state machines,
+ * financial calculators. NOT for CRUD, HTTP glue, or pure plumbing.
+ *
+ * Pattern: fast-check generates random inputs; you assert invariants.
+ * Run: npm test -- properties
+ * Install: npm install -D fast-check
+ *
+ * For more patterns, see https://fast-check.dev/docs/tutorials/quick-start/
+ */
+import { describe, it, expect } from 'vitest'
+import fc from 'fast-check'
+
+// import { serialize, deserialize, mySort, Stack } from '../src/module'
+
+describe('property tests', () => {
+  // 1. INVARIANT -- round-trip property
+  it('serialize + deserialize is identity', () => {
+    fc.assert(
+      fc.property(fc.dictionary(fc.string(), fc.integer()), (data) => {
+        // expect(deserialize(serialize(data))).toEqual(data)
+      })
+    )
+  })
+
+  // 2. ORACLE -- compare to a reference implementation
+  it('custom sort matches Array.prototype.sort', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer()), (xs) => {
+        // const mine = mySort([...xs])
+        // const reference = [...xs].sort((a, b) => a - b)
+        // expect(mine).toEqual(reference)
+      })
+    )
+  })
+
+  // 3. MODEL/STATE-MACHINE -- sequence of ops preserves invariant
+  it('stack push/pop preserves last-in-first-out', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer()), (items) => {
+        // const stack = new Stack<number>()
+        // for (const item of items) {
+        //   stack.push(item)
+        //   expect(stack.pop()).toBe(item)
+        // }
+      })
+    )
+  })
+
+  // Shrinking example -- fast-check minimizes a failing input.
+  // Uncomment to see: failure report will show the minimal counterexample.
+  // it('intentionally fails to demonstrate shrinking', () => {
+  //   fc.assert(
+  //     fc.property(fc.array(fc.integer()), (xs) => {
+  //       expect(xs.reduce((a, b) => a + b, 0)).toBeLessThan(1_000_000)
+  //     })
+  //   )
+  // })
+})
+```
+
+</details>
+
+<details><summary>Go -- testing/quick (stdlib)</summary>
+
+```go
+// Package myapp_test contains property-based tests using testing/quick.
+//
+// When to use: parsers, serializers, validators, crypto, state machines,
+// financial calculators. NOT for CRUD, HTTP glue, or pure plumbing.
+//
+// Pattern: testing/quick generates random inputs; you assert invariants.
+// Run: go test -run TestProperty ./...
+// Install: built-in stdlib — no external dependency.
+//
+// For more advanced property testing (shrinking, stateful), consider
+// https://github.com/flyingmutant/rapid
+package myapp_test
+
+import (
+	"sort"
+	"testing"
+	"testing/quick"
+)
+
+// 1. INVARIANT -- round-trip property
+func TestPropertySerializeRoundtrip(t *testing.T) {
+	f := func(data map[string]int) bool {
+		// encoded := serialize(data)
+		// decoded := deserialize(encoded)
+		// return reflect.DeepEqual(decoded, data)
+		_ = data
+		return true // Replace with real invariant
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
+	}
+}
+
+// 2. ORACLE -- compare custom impl against sort.Ints
+func TestPropertyCustomSortMatchesStdlib(t *testing.T) {
+	f := func(xs []int) bool {
+		// mine := mySort(append([]int{}, xs...))
+		// reference := append([]int{}, xs...)
+		// sort.Ints(reference)
+		// return slices.Equal(mine, reference)
+		reference := append([]int{}, xs...)
+		sort.Ints(reference)
+		_ = reference
+		return true
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
+	}
+}
+
+// 3. MODEL/STATE-MACHINE -- stack push/pop invariant
+func TestPropertyStackPushPopLIFO(t *testing.T) {
+	f := func(items []int) bool {
+		// stack := NewStack[int]()
+		// for _, item := range items {
+		//     stack.Push(item)
+		//     if got := stack.Pop(); got != item {
+		//         return false
+		//     }
+		// }
+		return true
+	}
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
+	}
+}
+```
+
+</details>
+
+<details><summary>Rust -- proptest</summary>
+
+```rust
+//! PROPERTY TEST TEMPLATE -- Copy this file as a starting point.
+//!
+//! When to use: parsers, serializers, validators, crypto, state machines,
+//! financial calculators. NOT for CRUD, HTTP glue, or pure plumbing.
+//!
+//! Pattern: proptest generates random inputs; you assert invariants.
+//! Run: cargo test --test properties
+//! Install: cargo add --dev proptest
+//!
+//! For more patterns, see https://proptest-rs.github.io/proptest/
+
+use proptest::prelude::*;
+use std::collections::HashMap;
+
+// use my_crate::{serialize, deserialize, my_sort};
+
+proptest! {
+    // 1. INVARIANT -- round-trip property
+    #[test]
+    fn serialize_roundtrip_is_identity(data in prop::collection::hash_map(".*", any::<i64>(), 0..10)) {
+        // let encoded = serialize(&data);
+        // let decoded: HashMap<String, i64> = deserialize(&encoded).unwrap();
+        // prop_assert_eq!(decoded, data);
+        let _ = data;
+    }
+
+    // 2. ORACLE -- compare custom impl against stdlib sort
+    #[test]
+    fn custom_sort_matches_stdlib(xs in prop::collection::vec(any::<i32>(), 0..100)) {
+        // let mut mine = xs.clone();
+        // my_sort(&mut mine);
+        let mut reference = xs.clone();
+        reference.sort();
+        // prop_assert_eq!(mine, reference);
+        let _ = reference;
+    }
+
+    // 3. MODEL/STATE-MACHINE -- stack LIFO invariant
+    #[test]
+    fn stack_push_pop_is_lifo(items in prop::collection::vec(any::<i32>(), 0..50)) {
+        // let mut stack: Vec<i32> = Vec::new();
+        // for &item in &items {
+        //     stack.push(item);
+        //     prop_assert_eq!(stack.pop(), Some(item));
+        // }
+        let _ = items;
+    }
+}
+```
+
+</details>
+
+<details><summary>Swift -- SwiftCheck</summary>
+
+```swift
+// PROPERTY TEST TEMPLATE -- Copy this file as a starting point.
+//
+// When to use: parsers, serializers, validators, crypto, state machines,
+// financial calculators. NOT for CRUD, UI glue, or pure plumbing.
+//
+// Pattern: SwiftCheck generates random inputs; you assert invariants.
+// Run: swift test
+// Install: add to Package.swift:
+//   .package(url: "https://github.com/typelift/SwiftCheck.git", from: "0.12.0")
+//
+// For more patterns, see https://github.com/typelift/SwiftCheck
+
+import XCTest
+import SwiftCheck
+
+// @testable import MyApp
+
+final class PropertyTests: XCTestCase {
+    // 1. INVARIANT -- round-trip property
+    func testSerializeRoundtripIsIdentity() {
+        property("serialize + deserialize is identity") <- forAll { (xs: [Int]) in
+            // let encoded = serialize(xs)
+            // let decoded: [Int] = deserialize(encoded) ?? []
+            // return decoded == xs
+            return xs == xs  // Replace with real invariant
+        }
+    }
+
+    // 2. ORACLE -- compare custom impl against stdlib sort
+    func testCustomSortMatchesStdlib() {
+        property("mySort equals Array.sorted()") <- forAll { (xs: [Int]) in
+            // let mine = mySort(xs)
+            let reference = xs.sorted()
+            // return mine == reference
+            return reference == xs.sorted()  // Replace with real comparison
+        }
+    }
+
+    // 3. MODEL/STATE-MACHINE -- stack LIFO invariant
+    func testStackPushPopIsLIFO() {
+        property("push-then-pop returns same element") <- forAll { (items: [Int]) in
+            // var stack = Stack<Int>()
+            // for item in items {
+            //     stack.push(item)
+            //     guard stack.pop() == item else { return false }
+            // }
+            return items.count >= 0  // Replace with real stack ops
+        }
+    }
+}
+```
+
+</details>
+
+**Key points:**
+
+- **Opt-in, never speculative** — don't install framework deps unless the user confirms there are modules that benefit
+- **`pass`/`return true`/commented-out assertions** in template bodies — these are placeholders for real invariants, not always-passing no-ops (the existing Phase A "placeholder tests" guidance applies)
+- **Three patterns per template** — invariant, oracle, state-machine — covers the high-value property categories
+- **Framework docs linked** — developers will extend templates using framework-specific features (shrinking strategies, custom generators, stateful testing)
+- **NOT run in CI by default** — regular `pytest` / `npm test` / `go test` / `cargo test` / `swift test` already picks these up via naming conventions. No separate CI job needed
+- **NOT a PR gate** — property tests are advisory signal, not required checks. Missing property tests should never block merge
+
 ## A4. Post-Setup
 
 After generating all files, verify the setup works end-to-end.
@@ -963,6 +1328,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | Release config | `[ -f .releaserc.json ]` | File exists (N/A for non-release repos) |
 | Commitlint config | `[ -f commitlint.config.js ]` | File exists (N/A for non-release repos) |
 | CodeScene config | `[ -f .codescene/custom-quality-gates.json ]` | File exists (N/A if CodeScene App not installed) |
+| Property tests | Any of `tests/test_properties*.py`, `__tests__/properties*.test.ts`, `properties_test.go`, `tests/properties.rs`, `PropertyTests.swift` | File exists (advisory; N/A if repo has no parser/validator/crypto/state-machine modules) |
 
 **Codecov detection logic:**
 1. Has test script (`"test"` in package.json / Makefile `test:` target / `go test` / `cargo test`) AND coverage config (`codecov.yml`, `.coveragerc`, vitest coverage config) -> **wire Codecov**
@@ -2864,6 +3230,7 @@ Write `.claude/CLAUDE.md` with this structure:
 ### Generation Rules
 
 - **Only include sections with content.** Skip "Commands" if there are no scripts. Skip "CI Workflows" if there are no workflow files.
+- **If property tests are present** (detected as `tests/test_properties*.py`, `__tests__/properties*.test.ts`, `properties_test.go`, `tests/properties.rs`, or `PropertyTests.swift`), add a bullet to Conventions: *"Property-based tests under `<path>` — for parsers, validators, serializers, crypto, state machines. Regular example-based tests for CRUD, UI, and plumbing."*
 - **Be specific, not generic.** Write "ShellCheck for `hooks/gate-scripts/*.sh`" not "linting is configured."
 - **Include counts.** Write "204 skill definitions" not "many skills."
 - **Document escape hatches.** If gate scripts block operations, list how to bypass them.
