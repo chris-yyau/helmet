@@ -1216,7 +1216,7 @@ done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -p
 exit $status
 ```
 
-**Reports summary job** — add to security.yml for PR summary:
+**Reports summary job** — add to security.yml for PR summary. Requires the `changes` detection job from Section N. Security Scanning Backstop:
 ```yaml
   reports:
     if: always()
@@ -1937,7 +1937,7 @@ git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
 
 CI backstop for security checks that seatbelt (or local hooks) runs at commit time. Defense-in-depth: catches issues from commits that bypass local hooks (e.g., `SKIP_SEATBELT=1`, no seatbelt installed, direct push from another machine).
 
-**Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (paths, concurrency, permissions, defaults, timeouts).
+**Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (concurrency, permissions, defaults, timeouts). Path filtering is split: push trigger uses `paths:` directly; PR trigger has no workflow-level path filter — instead a `changes` detection job does job-level gating (see below).
 
 **Required-check-compatible pattern:** If `Actions security` (zizmor) or any other scanner job from security.yml is set as a GitHub required status check, the workflow CANNOT use workflow-level `paths:` filter on the PR trigger — when path filters don't match, the workflow never starts and the required check is reported as absent, blocking merge. Instead, the workflow always starts on PRs, and a `changes` job detects security-relevant files. Scanner jobs use `if: needs.changes.outputs.security == 'true'` to skip when not needed. **GitHub treats skipped jobs as passing for required checks.** Push trigger retains path filters (no waste on docs-only main-branch pushes).
 
@@ -2017,7 +2017,8 @@ jobs:
             exit 0
           fi
           # Pipe directly to grep to avoid word-splitting on filenames with spaces.
-          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock|pnpm-lock|yarn\.lock|go\.sum|requirements|Dockerfile'; then
+          # Pattern must align with the on: push: paths: globs above.
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved'; then
             echo "security=true" >> "$GITHUB_OUTPUT"
           else
             echo "security=false" >> "$GITHUB_OUTPUT"
