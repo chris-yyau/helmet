@@ -1098,21 +1098,9 @@ echo "$ALL_CHECKS"
 # Build the contexts JSON array from confirmed required checks using jq (handles escaping).
 CONTEXTS=$(jq -nc '$ARGS.positional' --args "test (ubuntu-latest)" "test (macos-latest)" "commitlint")
 
-gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": CONTEXTS_PLACEHOLDER
-  },
-  "enforce_admins": false,
-  "required_pull_request_reviews": null,
-  "restrictions": null
-}
-EOF
-# NOTE: In practice, use jq to build the full JSON payload:
-# jq -n --argjson ctx "$CONTEXTS" '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
-#   | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
+jq -n --argjson ctx "$CONTEXTS" \
+  '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
+  | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
 
 # ── Verify ──
 gh api "repos/$OWNER/$REPO" --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, allow_update_branch, delete_branch_on_merge, allow_auto_merge}'
