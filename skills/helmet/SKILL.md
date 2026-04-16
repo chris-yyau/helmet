@@ -881,6 +881,7 @@ Install: pip install hypothesis
 
 For more patterns, see https://hypothesis.readthedocs.io/en/latest/quickstart.html
 """
+import pytest
 from hypothesis import given, strategies as st
 
 # from your_module import serialize, deserialize, validate, canonicalize
@@ -890,27 +891,27 @@ from hypothesis import given, strategies as st
 @given(st.dictionaries(st.text(), st.integers()))
 def test_serialize_roundtrip_is_identity(data):
     """Serializing then parsing should always return the original."""
+    pytest.skip("Template — replace body with real serialize/deserialize round-trip")
     # assert deserialize(serialize(data)) == data
-    pass  # Replace with your module's serialize/deserialize
 
 
 # 2. ORACLE -- compare implementation to a known-correct reference
 @given(st.lists(st.integers()))
 def test_custom_sort_matches_python_sorted(xs):
     """Your sort should match Python's built-in sorted()."""
+    pytest.skip("Template — replace body with real my_sort vs sorted() comparison")
     # assert my_sort(list(xs)) == sorted(xs)
-    pass
 
 
 # 3. MODEL/STATE-MACHINE -- sequences of ops preserve an invariant
 @given(st.lists(st.integers()))
 def test_push_then_pop_returns_same_element(items):
     """Stack push/pop is a two-way mapping for each element."""
+    pytest.skip("Template — replace body with real stack LIFO check")
     # stack = Stack()
     # for item in items:
     #     stack.push(item)
     #     assert stack.pop() == item
-    pass
 
 
 # Shrinking example -- Hypothesis will minimize a failing input.
@@ -937,44 +938,46 @@ def test_push_then_pop_returns_same_element(items):
  *
  * For more patterns, see https://fast-check.dev/docs/tutorials/quick-start/
  */
-import { describe, it, expect } from 'vitest'
-import fc from 'fast-check'
-
+import { describe, it } from 'vitest'
+// import fc from 'fast-check'
 // import { serialize, deserialize, mySort, Stack } from '../src/module'
 
 describe('property tests', () => {
   // 1. INVARIANT -- round-trip property
-  it('serialize + deserialize is identity', () => {
-    fc.assert(
-      fc.property(fc.dictionary(fc.string(), fc.integer()), (data) => {
-        // expect(deserialize(serialize(data))).toEqual(data)
-      })
-    )
-  })
+  it.todo('serialize + deserialize is identity')
+  // it('serialize + deserialize is identity', () => {
+  //   fc.assert(
+  //     fc.property(fc.dictionary(fc.string(), fc.integer()), (data) => {
+  //       expect(deserialize(serialize(data))).toEqual(data)
+  //     })
+  //   )
+  // })
 
   // 2. ORACLE -- compare to a reference implementation
-  it('custom sort matches Array.prototype.sort', () => {
-    fc.assert(
-      fc.property(fc.array(fc.integer()), (xs) => {
-        // const mine = mySort([...xs])
-        // const reference = [...xs].sort((a, b) => a - b)
-        // expect(mine).toEqual(reference)
-      })
-    )
-  })
+  it.todo('custom sort matches Array.prototype.sort')
+  // it('custom sort matches Array.prototype.sort', () => {
+  //   fc.assert(
+  //     fc.property(fc.array(fc.integer()), (xs) => {
+  //       const mine = mySort([...xs])
+  //       const reference = [...xs].sort((a, b) => a - b)
+  //       expect(mine).toEqual(reference)
+  //     })
+  //   )
+  // })
 
   // 3. MODEL/STATE-MACHINE -- sequence of ops preserves invariant
-  it('stack push/pop preserves last-in-first-out', () => {
-    fc.assert(
-      fc.property(fc.array(fc.integer()), (items) => {
-        // const stack = new Stack<number>()
-        // for (const item of items) {
-        //   stack.push(item)
-        //   expect(stack.pop()).toBe(item)
-        // }
-      })
-    )
-  })
+  it.todo('stack push/pop preserves last-in-first-out')
+  // it('stack push/pop preserves last-in-first-out', () => {
+  //   fc.assert(
+  //     fc.property(fc.array(fc.integer()), (items) => {
+  //       const stack = new Stack<number>()
+  //       for (const item of items) {
+  //         stack.push(item)
+  //         expect(stack.pop()).toBe(item)
+  //       }
+  //     })
+  //   )
+  // })
 
   // Shrinking example -- fast-check minimizes a failing input.
   // Uncomment to see: failure report will show the minimal counterexample.
@@ -1009,52 +1012,52 @@ describe('property tests', () => {
 package myapp_test
 
 import (
-	"sort"
 	"testing"
-
-	"pgregory.net/rapid"
+	// Uncomment when you replace t.Skip() bodies with real property checks:
+	// "sort"
+	// "pgregory.net/rapid"
 )
 
 // 1. INVARIANT -- round-trip property
 func TestPropertySerializeRoundtrip(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		data := rapid.MapOf(rapid.String(), rapid.Int()).Draw(t, "data")
-		// encoded := serialize(data)
-		// decoded := deserialize(encoded)
-		// if !reflect.DeepEqual(decoded, data) {
-		//     t.Fatalf("roundtrip mismatch: got %v, want %v", decoded, data)
-		// }
-		_ = data
-	})
+	t.Skip("template — replace body with real serialize/deserialize round-trip check")
+	// rapid.Check(t, func(t *rapid.T) {
+	//     data := rapid.MapOf(rapid.String(), rapid.Int()).Draw(t, "data")
+	//     encoded := serialize(data)
+	//     decoded := deserialize(encoded)
+	//     if !reflect.DeepEqual(decoded, data) {
+	//         t.Fatalf("roundtrip mismatch: got %v, want %v", decoded, data)
+	//     }
+	// })
 }
 
 // 2. ORACLE -- compare custom impl against sort.Ints
 func TestPropertyCustomSortMatchesStdlib(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		xs := rapid.SliceOf(rapid.Int()).Draw(t, "xs")
-		// mine := mySort(append([]int{}, xs...))
-		reference := append([]int{}, xs...)
-		sort.Ints(reference)
-		// if !slices.Equal(mine, reference) {
-		//     t.Fatalf("sort mismatch: got %v, want %v", mine, reference)
-		// }
-		_ = reference
-	})
+	t.Skip("template — replace body with real mySort vs sort.Ints comparison")
+	// rapid.Check(t, func(t *rapid.T) {
+	//     xs := rapid.SliceOf(rapid.Int()).Draw(t, "xs")
+	//     mine := mySort(append([]int{}, xs...))
+	//     reference := append([]int{}, xs...)
+	//     sort.Ints(reference)
+	//     if !slices.Equal(mine, reference) {
+	//         t.Fatalf("sort mismatch: got %v, want %v", mine, reference)
+	//     }
+	// })
 }
 
 // 3. MODEL/STATE-MACHINE -- stack push/pop invariant
 func TestPropertyStackPushPopLIFO(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		items := rapid.SliceOf(rapid.Int()).Draw(t, "items")
-		// stack := NewStack[int]()
-		// for _, item := range items {
-		//     stack.Push(item)
-		//     if got := stack.Pop(); got != item {
-		//         t.Fatalf("LIFO violated: push %d then pop %d", item, got)
-		//     }
-		// }
-		_ = items
-	})
+	t.Skip("template — replace body with real stack LIFO invariant check")
+	// rapid.Check(t, func(t *rapid.T) {
+	//     items := rapid.SliceOf(rapid.Int()).Draw(t, "items")
+	//     stack := NewStack[int]()
+	//     for _, item := range items {
+	//         stack.Push(item)
+	//         if got := stack.Pop(); got != item {
+	//             t.Fatalf("LIFO violated: push %d then pop %d", item, got)
+	//         }
+	//     }
+	// })
 }
 
 // ── Stdlib fallback (no shrinking) ───────────────────────────────────────────
@@ -1091,40 +1094,41 @@ func TestPropertyStackPushPopLIFO(t *testing.T) {
 //! For more patterns, see https://proptest-rs.github.io/proptest/
 
 use proptest::prelude::*;
-use std::collections::HashMap;
 
+// use std::collections::HashMap;  // uncomment when you wire up the serialize test
 // use my_crate::{serialize, deserialize, my_sort};
 
 proptest! {
     // 1. INVARIANT -- round-trip property
+    // Remove #[ignore] once you wire up real serialize/deserialize.
     #[test]
-    fn serialize_roundtrip_is_identity(data in prop::collection::hash_map(".*", any::<i64>(), 0..10)) {
-        // let encoded = serialize(&data);
+    #[ignore = "template — replace body with real round-trip check"]
+    fn serialize_roundtrip_is_identity(_data in prop::collection::hash_map(".*", any::<i64>(), 0..10)) {
+        // let encoded = serialize(&_data);
         // let decoded: HashMap<String, i64> = deserialize(&encoded).unwrap();
-        // prop_assert_eq!(decoded, data);
-        let _ = data;
+        // prop_assert_eq!(decoded, _data);
     }
 
     // 2. ORACLE -- compare custom impl against stdlib sort
     #[test]
-    fn custom_sort_matches_stdlib(xs in prop::collection::vec(any::<i32>(), 0..100)) {
-        // let mut mine = xs.clone();
+    #[ignore = "template — replace body with real my_sort vs stdlib comparison"]
+    fn custom_sort_matches_stdlib(_xs in prop::collection::vec(any::<i32>(), 0..100)) {
+        // let mut mine = _xs.clone();
         // my_sort(&mut mine);
-        let mut reference = xs.clone();
-        reference.sort();
+        // let mut reference = _xs.clone();
+        // reference.sort();
         // prop_assert_eq!(mine, reference);
-        let _ = reference;
     }
 
     // 3. MODEL/STATE-MACHINE -- stack LIFO invariant
     #[test]
-    fn stack_push_pop_is_lifo(items in prop::collection::vec(any::<i32>(), 0..50)) {
+    #[ignore = "template — replace body with real stack LIFO check"]
+    fn stack_push_pop_is_lifo(_items in prop::collection::vec(any::<i32>(), 0..50)) {
         // let mut stack: Vec<i32> = Vec::new();
-        // for &item in &items {
+        // for &item in &_items {
         //     stack.push(item);
         //     prop_assert_eq!(stack.pop(), Some(item));
         // }
-        let _ = items;
     }
 }
 ```
@@ -1178,37 +1182,37 @@ final class PropertyTests: XCTestCase {
 
     // 1. INVARIANT -- round-trip property
     func testSerializeRoundtripIsIdentity() throws {
-        for _ in 0..<iterations {
-            let xs = randomInts()
-            // let encoded = serialize(xs)
-            // let decoded: [Int] = try deserialize(encoded)
-            // XCTAssertEqual(decoded, xs, "roundtrip failed for: \(xs)")
-            XCTAssertEqual(xs, xs)  // Replace with real invariant
-        }
+        throw XCTSkip("Template — replace body with real serialize/deserialize round-trip")
+        // for _ in 0..<iterations {
+        //     let xs = randomInts()
+        //     let encoded = serialize(xs)
+        //     let decoded: [Int] = try deserialize(encoded)
+        //     XCTAssertEqual(decoded, xs, "roundtrip failed for: \(xs)")
+        // }
     }
 
     // 2. ORACLE -- compare custom impl against stdlib sort
-    func testCustomSortMatchesStdlib() {
-        for _ in 0..<iterations {
-            let xs = randomInts()
-            // let mine = mySort(xs)
-            let reference = xs.sorted()
-            // XCTAssertEqual(mine, reference, "sort mismatch for: \(xs)")
-            _ = reference
-        }
+    func testCustomSortMatchesStdlib() throws {
+        throw XCTSkip("Template — replace body with real mySort vs sorted() comparison")
+        // for _ in 0..<iterations {
+        //     let xs = randomInts()
+        //     let mine = mySort(xs)
+        //     let reference = xs.sorted()
+        //     XCTAssertEqual(mine, reference, "sort mismatch for: \(xs)")
+        // }
     }
 
     // 3. MODEL/STATE-MACHINE -- stack LIFO invariant
-    func testStackPushPopIsLIFO() {
-        for _ in 0..<iterations {
-            let items = randomInts(count: Int.random(in: 0...20))
-            // var stack = Stack<Int>()
-            // for item in items {
-            //     stack.push(item)
-            //     XCTAssertEqual(stack.pop(), item, "LIFO violated after pushing \(items)")
-            // }
-            _ = items
-        }
+    func testStackPushPopIsLIFO() throws {
+        throw XCTSkip("Template — replace body with real stack LIFO invariant check")
+        // for _ in 0..<iterations {
+        //     let items = randomInts(count: Int.random(in: 0...20))
+        //     var stack = Stack<Int>()
+        //     for item in items {
+        //         stack.push(item)
+        //         XCTAssertEqual(stack.pop(), item, "LIFO violated after pushing \(items)")
+        //     }
+        // }
     }
 }
 ```
@@ -1218,10 +1222,11 @@ final class PropertyTests: XCTestCase {
 **Key points:**
 
 - **Opt-in, never speculative** — don't install framework deps unless the user confirms there are modules that benefit
-- **`pass`/`return true`/commented-out assertions** in template bodies — these are placeholders for real invariants, not always-passing no-ops (the existing Phase A "placeholder tests" guidance applies)
+- **Placeholders follow the existing Phase A guidance** — `pass` (Python), `it.todo(...)` (TypeScript/JS — marks as pending, not passing), `t.Skip(...)` (Go), `XCTSkip(...)` (Swift), commented-out assertions (Rust). **Avoid always-passing placeholders** like `return true` or `expect(true).toBe(true)` — they inflate pass counts
+- **No dangling unused imports** — comment out imports alongside their usages. Templates must compile under strict settings (`noUnusedLocals`, `-D warnings`, etc.)
 - **Three patterns per template** — invariant, oracle, state-machine — covers the high-value property categories
 - **Framework docs linked** — developers will extend templates using framework-specific features (shrinking strategies, custom generators, stateful testing)
-- **NOT run in CI by default** — regular `pytest` / `npm test` / `go test` / `cargo test` / `swift test` already picks these up via naming conventions. No separate CI job needed
+- **Discovered by normal test runners** — files matching the naming conventions (`tests/test_properties*.py`, `__tests__/properties*.test.ts`, `properties_test.go`, `tests/properties.rs`, `PropertyTests.swift`) are picked up by the default test commands. They run alongside example-based tests; no separate CI job needed
 - **NOT a PR gate** — property tests are advisory signal, not required checks. Missing property tests should never block merge
 
 ## A4. Post-Setup
