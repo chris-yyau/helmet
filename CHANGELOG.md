@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/chris-yyau/helmet/compare/v1.8.0...v1.9.0) (2026-04-16)
+
+
+### Features
+
+* make zizmor a required check via job-level skip pattern ([#14](https://github.com/chris-yyau/helmet/issues/14)) ([58b5326](https://github.com/chris-yyau/helmet/commit/58b5326dcc71124ed8ff37b8431ce5e0d5fba07b))
+
 # [1.8.0](https://github.com/chris-yyau/helmet/compare/v1.7.1...v1.8.0) (2026-04-16)
 
 
