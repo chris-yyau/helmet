@@ -2,21 +2,6 @@ name: Security
 
 on:
   pull_request:
-    paths:
-      - '.github/**'
-      - '**/*.sh'
-      - '**/*.js'
-      - '**/*.py'
-      - '**/*.yml'
-      - '**/*.yaml'
-      - 'package.json'
-      - '**/package-lock.json'
-      - '**/pnpm-lock.yaml'
-      - '**/yarn.lock'
-      - '**/go.sum'
-      - '**/requirements*.txt'
-      - '**/Dockerfile'
-      - '**/*.tf'
   push:
     branches: [main]
     paths:
@@ -47,8 +32,43 @@ defaults:
     shell: bash
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      security: ${{ steps.filter.outputs.security }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect security-relevant changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE_SHA"...HEAD 2>/dev/null || true)
+          if printf '%s\n' $CHANGED | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock|pnpm-lock|yarn\.lock|go\.sum|requirements|Dockerfile'; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+          fi
+
   trivy:
     name: Dependency CVEs
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -78,6 +98,8 @@ jobs:
 
   semgrep:
     name: Code security
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -95,6 +117,8 @@ jobs:
 
   checkov:
     name: IaC misconfig
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -112,6 +136,8 @@ jobs:
 
   zizmor:
     name: Actions security
+    needs: [changes]
+    if: needs.changes.outputs.security == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -131,7 +157,7 @@ jobs:
 
   reports:
     if: always()
-    needs: [trivy, semgrep, checkov, zizmor]
+    needs: [changes, trivy, semgrep, checkov, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

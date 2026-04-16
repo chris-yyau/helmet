@@ -33,7 +33,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
 | `tests.yml` | PR | Version drift detection + commitlint |
-| `security.yml` | Push + PR | Semgrep, Checkov, Zizmor, Trivy scanners |
+| `security.yml` | Push (path-filtered) + PR (all, job-level skip) | Semgrep, Checkov, Zizmor, Trivy scanners |
 | `pinact.yml` | Push to main (`.github/workflows/**` paths only) | Auto-pin GitHub Actions to SHA |
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
@@ -45,6 +45,8 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 - **Actions security:** All actions SHA-pinned with version comments; harden-runner on every ubuntu job
 - **Permissions:** Permissions explicitly scoped per workflow; `permissions: {}` where possible, minimum required scopes granted per-job
 - **Dependabot:** Configured for `github-actions` ecosystem
+- **Required checks:** `version-drift`, `commitlint`, `Actions security` (zizmor) — enforced via branch protection (`strict: true`, `enforce_admins: false`)
+- **Security workflow pattern:** PR trigger has no path filter (workflow always starts); a `changes` job detects security-relevant files; scanner jobs skip via `if:` when no relevant files changed. GitHub treats skipped jobs as passing for required checks. Push trigger retains path filters
 
 ## Version Sync
 
