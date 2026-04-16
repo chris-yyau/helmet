@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/chris-yyau/helmet/compare/v1.11.0...v1.12.0) (2026-04-16)
+
+
+### Features
+
+* add property-based test templates (5 languages) ([#18](https://github.com/chris-yyau/helmet/issues/18)) ([75f3c37](https://github.com/chris-yyau/helmet/commit/75f3c3711056ebe61788ac170b3afb71eeaed8db))
+
 # [1.11.0](https://github.com/chris-yyau/helmet/compare/v1.10.0...v1.11.0) (2026-04-16)
 
 
