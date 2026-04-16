@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/chris-yyau/helmet/compare/v1.10.0...v1.11.0) (2026-04-16)
+
+
+### Features
+
+* admin bypass audit workflow ([#17](https://github.com/chris-yyau/helmet/issues/17)) ([e748539](https://github.com/chris-yyau/helmet/commit/e748539950d98c186ccc01c81f5d8539e415e7f9))
+
 # [1.10.0](https://github.com/chris-yyau/helmet/compare/v1.9.0...v1.10.0) (2026-04-16)
 
 
