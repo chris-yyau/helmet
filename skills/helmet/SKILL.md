@@ -1076,19 +1076,31 @@ EOF
 
 # ── Branch protection (required for safe auto-merge) ──
 # Without this, auto-merge merges PRs immediately without waiting for CI.
-# Adapt "contexts" to match actual job names from the repo's tests.yml.
-gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT \
-  --input - <<'EOF'
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": ["test (ubuntu-latest)", "test (macos-latest)"]
-  },
-  "enforce_admins": false,
-  "required_pull_request_reviews": null,
-  "restrictions": null
-}
-EOF
+# IMPORTANT: Run this AFTER deploying workflows and triggering at least one run.
+# GitHub requires a check to have at least one recorded run before accepting it as required.
+
+# Step 1: Discover actual check names from a recent workflow run.
+# GitHub uses the `name:` field as the check name; falls back to the job key if no name is set.
+ALL_CHECKS=$(gh api "repos/$OWNER/$REPO/commits/$(git rev-parse HEAD)/check-runs" \
+  --jq '.check_runs[].name' | sort -u)
+echo "Discovered checks:"
+echo "$ALL_CHECKS"
+
+# Step 2: Categorize checks.
+# Default policy: test + lint + security-critical → required; scanning + reporting → advisory.
+# Required (examples): "test", "test (ubuntu-latest)", "commitlint", "Actions security" (zizmor), "version-drift"
+# Advisory (examples): "Code security" (semgrep), "Dependency CVEs" (trivy), "IaC misconfig" (checkov)
+#
+# Present the discovered list to the user for confirmation before applying.
+# User confirms which checks should be required.
+
+# Step 3: Apply via API.
+# Build the contexts JSON array from confirmed required checks using jq (handles escaping).
+CONTEXTS=$(jq -nc '$ARGS.positional' --args "test (ubuntu-latest)" "test (macos-latest)" "commitlint")
+
+jq -n --argjson ctx "$CONTEXTS" \
+  '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
+  | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
 
 # ── Verify ──
 gh api "repos/$OWNER/$REPO" --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, allow_update_branch, delete_branch_on_merge, allow_auto_merge}'
@@ -1100,10 +1112,12 @@ Add patterns for any additional third-party actions the repo uses (e.g., `anchor
 
 **Branch protection notes:**
 - `strict: true` requires the PR branch to be up-to-date with main before merging (works with `allow_update_branch`)
-- `contexts` must match exact job names from CI workflows — run `gh run view <run-id>` to see job names
+- **Job name resolution:** GitHub uses the `name:` field if present, otherwise the YAML job key. Example: a job key `zizmor` with `name: Actions security` appears as "Actions security" in status checks. Always verify with `gh api "repos/$OWNER/$REPO/commits/<sha>/check-runs" --jq '.check_runs[].name' | sort -u`
+- **Required check prerequisite:** each check must have at least one recorded run on the repository for GitHub to accept it as a required check. Run workflows at least once before setting protection
 - `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). Set `true` for team repos
 - `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval
 - Without branch protection, `allow_auto_merge` merges immediately with no checks — always pair them
+- **Renaming a job's `name:` field silently breaks required check enforcement** — the old name stays in branch protection but no longer matches any check, causing PRs to hang. Always update branch protection when renaming job display names
 
 ### B2. Workflow Hardening (apply to ALL workflows)
 
@@ -2522,6 +2536,7 @@ done
 - **Separate `sbom` job** with own permissions — test job stays `contents: read` only (least-privilege)
 - **Job-level permissions** over top-level — when any job needs extra permissions, move ALL permissions to job-level to avoid accidental privilege escalation
 - **Attestations require GitHub Team or public repos** — `attest-build-provenance` fails on private repos with free plan ("Feature not available for the org"). Add attestations later when repos go public or plan is upgraded
+- **Environment deployment protection rules require Team plan or higher for private repos** — `environment:` blocks in workflows can scope secrets on any plan, but required reviewers and wait timers only work on public repos (any plan) or private repos on Team/Enterprise plans. Free plan private repos cannot use them — use branch protection required checks as the merge gate instead
 - **Cosign only for binary releases** (forge) — web apps have no release artifact to sign
 - **Release archive attestation for non-binary repos** — source-only repos (shell projects, config repos) attest GitHub-generated tarball/zip archives on release. Separate `attest` job with isolated `id-token: write` + `attestations: write` permissions — keeps Sigstore OIDC scope away from the `npx`-heavy release job. Tag validated against semver regex, archives integrity-checked with `tar tzf`/`unzip -t` before attestation. `github.repository` passed via env var (not inline `${{ }}`) to prevent template injection. Includes rerun recovery: `elif` branch checks if latest tag points to HEAD via `git rev-list`, so re-running the workflow after a transient attest failure re-triggers attestation. Added 2026-03-30
 - **Org-level Actions permissions override repo-level** — `gh api repos/OWNER/REPO/actions/permissions/selected-actions` returns 409 Conflict when the org controls the setting. Always check org-level first: `gh api orgs/ORG/actions/permissions/selected-actions`. If org-level is set, modify it there. Added 2026-03-30
