@@ -2528,14 +2528,21 @@ jobs:
           if [[ "$ACTOR" == *"[bot]"* ]] || [[ "$ACTOR" == "github-actions" ]]; then
             echo "Skipping audit — automated actor: $ACTOR"; exit 0
           fi
-          # Skip release commits
+          # Skip release commits — `chore(release)` as first-line prefix,
+          # `[skip ci]` anywhere in full commit message.
           FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
-          case "$FIRST_LINE" in
-            "chore(release)"*|*"[skip ci]"*)
-              echo "Skipping audit — release/CI commit"; exit 0 ;;
-          esac
-          # Look up PRs associated with this SHA
-          PR_COUNT=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" --jq 'length' 2>/dev/null || echo "0")
+          if [[ "$FIRST_LINE" == "chore(release)"* ]]; then
+            echo "Skipping audit — release commit"; exit 0
+          fi
+          if printf '%s' "$COMMIT_MSG" | grep -qF '[skip ci]'; then
+            echo "Skipping audit — CI-skip marker"; exit 0
+          fi
+          # Look up PRs — distinguish "API OK, no PR" (bypass) from "API failed" (skip).
+          # Never treat gh api failure as bypass — that creates false-positive issues.
+          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
+            echo "::warning::gh api failed — skipping audit"; exit 0
+          fi
+          PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null || echo "0")
           if [ "$PR_COUNT" != "0" ]; then
             echo "No bypass — commit came from PR"; exit 0
           fi
@@ -2551,10 +2558,12 @@ See `.github/workflows/bypass-audit.yml` in the helmet repo for the full templat
 
 **Detection logic:**
 1. If actor is a bot (contains `[bot]` or equals `github-actions`) → skip
-2. If commit message starts with `chore(release)` or contains `[skip ci]` → skip
-3. Look up PRs associated with commit SHA via `/commits/{sha}/pulls` API
-4. If zero associated PRs → direct-push bypass → warn + create issue
-5. Otherwise → commit came from PR → no alert
+2. If commit message first line starts with `chore(release)` → skip (conventional commit)
+3. If full commit message contains `[skip ci]` anywhere → skip
+4. Look up PRs associated with commit SHA via `/commits/{sha}/pulls` API
+5. **If `gh api` fails (rate limit, transient error) → log warning, skip** (do NOT create false-positive issue)
+6. If API succeeded and zero associated PRs → direct-push bypass → warn + create issue
+7. Otherwise → commit came from PR → no alert
 
 **Known limitations:**
 - `gh pr merge --admin` DOES associate the merge commit with a PR, so this workflow won't detect that vector. Adding check-runs inspection would catch it but requires `administration: read` which is an elevated permission.

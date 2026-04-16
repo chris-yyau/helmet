@@ -11,9 +11,11 @@ name: Admin Bypass Audit
 # Known limitations:
 # - `gh pr merge --admin` DOES associate the merge commit with a PR, so this
 #   workflow won't detect that vector. For that, add check-runs inspection.
-# - Automated actors (github-actions[bot], *-bot, dependabot[bot]) are skipped
+# - Automated actors matching `[bot]` suffix (github-actions[bot],
+#   dependabot[bot], etc.) or actor equal to `github-actions` are skipped
 #   to avoid noise on release commits.
-# - Release commits (`chore(release)`, `[skip ci]`) are skipped.
+# - Release commits (`chore(release)` as first line of commit message, or
+#   `[skip ci]` anywhere in the full message) are skipped.
 #
 # SECURITY: All user-controlled inputs (commit message, actor name) are passed
 # via env: block and quoted in shell. Never interpolate github.event.* directly
@@ -63,20 +65,33 @@ jobs:
             exit 0
           fi
 
-          # Skip release commits (semantic-release, CI-triggered)
+          # Skip release commits.
+          # `chore(release)` only matches as first-line prefix (conventional commit).
+          # `[skip ci]` is searched in the FULL commit message (header, body, or trailer).
           FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
-          case "$FIRST_LINE" in
-            "chore(release)"*|*"[skip ci]"*)
-              echo "Skipping audit — release/CI commit: $FIRST_LINE"
-              exit 0
-              ;;
-          esac
+          if [[ "$FIRST_LINE" == "chore(release)"* ]]; then
+            echo "Skipping audit — release commit: $FIRST_LINE"
+            exit 0
+          fi
+          if printf '%s' "$COMMIT_MSG" | grep -qF '[skip ci]'; then
+            echo "Skipping audit — CI-skip marker in commit message"
+            exit 0
+          fi
 
-          # Look up PRs associated with this commit SHA
-          PR_COUNT=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" --jq 'length' 2>/dev/null || echo "0")
+          # Look up PRs associated with this commit SHA.
+          # CRITICAL: Distinguish "API succeeded, no PR found" from "API failed".
+          # The former = bypass (alert). The latter = transient error (warn + skip,
+          # do NOT create false-positive issue).
+          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
+            echo "::warning::gh api failed to list PRs for $COMMIT_SHA — skipping audit (cannot determine bypass status)"
+            echo "Response: $PRS_JSON"
+            exit 0
+          fi
 
+          # Parse once, reuse
+          PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null || echo "0")
           if [ "$PR_COUNT" != "0" ]; then
-            PR_NUM=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" --jq '.[0].number' 2>/dev/null || echo "?")
+            PR_NUM=$(printf '%s' "$PRS_JSON" | jq -r '.[0].number // "?"' 2>/dev/null || echo "?")
             echo "No bypass — commit came from PR #$PR_NUM"
             exit 0
           fi
@@ -84,18 +99,22 @@ jobs:
           # No associated PR → direct push = bypass
           echo "::warning::Admin bypass: direct push to main by $ACTOR (commit ${COMMIT_SHA})"
 
-          # Ensure the admin-bypass label exists (idempotent)
+          # Ensure the admin-bypass label exists (idempotent; track success for log clarity)
+          LABEL_OK=1
           gh label create "admin-bypass" \
             --color "d93f0b" \
             --description "Commit bypassed required status checks" \
-            --repo "$REPO" 2>/dev/null || true
+            --repo "$REPO" 2>/dev/null || LABEL_OK=0
 
-          # Compose issue body in a file — values from env vars, properly quoted
+          # Compose issue body in a file — values from env vars, properly quoted.
+          # Trap ensures cleanup even if issue creation fails and set -e aborts.
+          BODY_FILE=$(mktemp)
+          trap 'rm -f "$BODY_FILE"' EXIT
+
           TITLE="Admin Bypass: $(printf '%s' "$COMMIT_SHA" | cut -c1-7) by @$ACTOR"
           MSG_PREVIEW=$(printf '%s' "$COMMIT_MSG" | head -3)
           NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-          BODY_FILE=$(mktemp)
           {
             printf '%s\n\n' "**Direct Push Bypass Detected**"
             printf '%s\n\n' "This commit was pushed directly to \`main\` without a pull request, bypassing required status checks and review policy."
@@ -110,14 +129,14 @@ jobs:
             printf '**Action required:** Review whether this bypass was intentional. If so, document the rationale in a comment and close. If not, investigate how branch protection was circumvented.\n'
           } > "$BODY_FILE"
 
-          gh issue create \
-            --repo "$REPO" \
-            --title "$TITLE" \
-            --body-file "$BODY_FILE" \
-            --label "admin-bypass" 2>&1 || \
-          gh issue create \
-            --repo "$REPO" \
-            --title "$TITLE" \
-            --body-file "$BODY_FILE"
-
-          rm -f "$BODY_FILE"
+          # Try with label first; fall back to no-label if label creation failed earlier
+          # or if labeling itself fails. Log the fallback so audit is not silent.
+          if [ "$LABEL_OK" = "1" ]; then
+            if ! gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE" --label "admin-bypass" 2>&1; then
+              echo "::warning::Failed to create labeled issue — retrying without label"
+              gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+            fi
+          else
+            echo "::warning::admin-bypass label unavailable — creating issue without label"
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+          fi
