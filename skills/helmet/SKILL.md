@@ -3215,8 +3215,12 @@ for full in "${REPOS[@]}"; do
   RECENT_SHA=$(gh api "repos/$full/commits" --jq '.[0].sha' 2>/dev/null)
   AVAILABLE='[]'
   if [ -n "$RECENT_SHA" ]; then
-    AVAILABLE_RAW=$(gh api "repos/$full/commits/$RECENT_SHA/check-runs" \
-      --jq '[.check_runs[].name] | unique' 2>/dev/null)
+    # --paginate is required: the default `/check-runs` page size is 30, so
+    # a commit with many CI jobs (per-OS test matrix, multiple bots) could
+    # silently drop a scanner from AVAILABLE. Aggregate all pages, dedup.
+    AVAILABLE_RAW=$(gh api --paginate "repos/$full/commits/$RECENT_SHA/check-runs" \
+      --jq '.check_runs[].name' 2>/dev/null \
+      | jq -Rs 'split("\n") | map(select(. != "")) | unique')
     AVAILABLE=${AVAILABLE_RAW:-"[]"}
   fi
 
@@ -3231,11 +3235,14 @@ for full in "${REPOS[@]}"; do
 
   # Apply (PATCH preserves other branch-protection settings; we propagate the
   # current strict value so an intentional `strict: false` repo isn't silently
-  # changed).
-  jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" \
-    '{strict: $strict, contexts: $contexts}' \
-    | gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-        -X PATCH --input - --jq '{strict, contexts}'
+  # changed). Echo a per-repo ❌ on failure so fleet runs surface errors
+  # instead of relying on stderr being noticed.
+  if ! jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" \
+        '{strict: $strict, contexts: $contexts}' \
+       | gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+           -X PATCH --input - --jq '{strict, contexts}'; then
+    echo "  ❌ PATCH failed for $full"
+  fi
 done
 ```
 
