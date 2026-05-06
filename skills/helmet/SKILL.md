@@ -1369,7 +1369,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
-| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts \| any(. == "Code security")'` | All four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not) |
+| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts \| (index("Actions security") and index("Code security") and index("Dependency CVEs") and index("IaC misconfig")) != null'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
@@ -3177,9 +3177,15 @@ Pure branch-protection update — no code change, no PR. Use when an existing
 repo deployed helmet's `security.yml` but the scanners aren't required-checks.
 Idempotent: re-adds existing required checks unchanged.
 
+**Requires `bash`** (uses arrays — scanner names contain spaces, so POSIX
+word-splitting won't work). macOS ships bash 3.2+, sufficient.
+
 ```bash
-# Targets: any helmet-onboarded repo. Edit OWNER/REPO list as needed.
-REPOS=("chris-yyau/helmet" "Dive-And-Dev/growth-engine" "chris-yyau/seatbelt")
+#!/usr/bin/env bash
+set -u
+
+# Edit this list per use. Slugs are "OWNER/repo".
+REPOS=("OWNER/repo1" "OWNER/repo2")
 
 # Scanner names that helmet's security.yml emits (job-level skip pattern means
 # these always report a result on every PR — pass or skip-counted-as-pass).
@@ -3190,29 +3196,46 @@ for full in "${REPOS[@]}"; do
   DEFAULT_BRANCH=$(gh api "repos/$full" --jq '.default_branch' 2>/dev/null) || {
     echo "  ❌ cannot read repo metadata"; continue
   }
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    echo "  ❌ no default branch resolved"; continue
+  fi
 
-  # Read current required contexts
-  CURRENT=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-    --jq '.contexts // []' 2>/dev/null) || {
+  # Read current strict flag (preserve — don't silently flip a repo's policy)
+  STRICT_CUR=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+    --jq '.strict' 2>/dev/null)
+  if [ -z "$STRICT_CUR" ]; then
     echo "  ❌ no branch protection on $DEFAULT_BRANCH (set up via B1b first)"; continue
-  }
+  fi
+
+  # Read current required contexts (default to empty array if missing)
+  CURRENT=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+    --jq '.contexts // []' 2>/dev/null)
+  CURRENT=${CURRENT:-"[]"}
 
   # Discover scanners that have actually run on the repo recently — only add
   # ones with a recorded run, otherwise GitHub rejects them as required checks.
   RECENT_SHA=$(gh api "repos/$full/commits" --jq '.[0].sha' 2>/dev/null)
-  AVAILABLE=$(gh api "repos/$full/commits/$RECENT_SHA/check-runs" \
-    --jq '[.check_runs[].name] | unique')
+  AVAILABLE='[]'
+  if [ -n "$RECENT_SHA" ]; then
+    AVAILABLE_RAW=$(gh api "repos/$full/commits/$RECENT_SHA/check-runs" \
+      --jq '[.check_runs[].name] | unique' 2>/dev/null)
+    AVAILABLE=${AVAILABLE_RAW:-"[]"}
+  fi
 
   # Merge: keep current + add scanners that exist in AVAILABLE
   MERGED=$(jq -nc --argjson current "$CURRENT" --argjson available "$AVAILABLE" \
     --argjson scanners "$(printf '%s\n' "${SCANNERS[@]}" | jq -Rcs 'split("\n") | map(select(. != ""))')" '
     ($current + ($scanners | map(select(. as $s | $available | index($s)))) ) | unique')
 
-  echo "  current: $CURRENT"
-  echo "  merged:  $MERGED"
+  echo "  strict (preserved): $STRICT_CUR"
+  echo "  current contexts:   $CURRENT"
+  echo "  merged contexts:    $MERGED"
 
-  # Apply (PATCH preserves other branch-protection settings)
-  jq -nc --argjson contexts "$MERGED" '{strict: true, contexts: $contexts}' \
+  # Apply (PATCH preserves other branch-protection settings; we propagate the
+  # current strict value so an intentional `strict: false` repo isn't silently
+  # changed).
+  jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" \
+    '{strict: $strict, contexts: $contexts}' \
     | gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
         -X PATCH --input - --jq '{strict, contexts}'
 done
@@ -3221,7 +3244,10 @@ done
 **Why PATCH not PUT:** PATCH on `/required_status_checks` only updates that
 sub-resource. PUT on `/protection` would require re-specifying every other
 branch-protection field (enforce_admins, restrictions, etc.) — easy to miss
-one and accidentally regress.
+one and accidentally regress. The PATCH payload still must include all
+sub-resource fields you want set; that's why we read and propagate `strict`
+explicitly (default-overwriting it to `true` would flip a repo intentionally
+configured `strict: false`).
 
 **Verify across the fleet:**
 ```bash
