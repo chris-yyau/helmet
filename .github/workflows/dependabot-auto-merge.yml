@@ -57,9 +57,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          # Re-runs hit "already approved" (non-zero exit) when the prior approval
-          # wasn't dismissed. Tolerate that so the merge enqueue still runs.
-          gh pr review --approve "$PR_URL" || echo "approve step skipped (likely already approved)"
+          # Tolerate ONLY the "already approved" idempotency case on re-runs.
+          # Other failures (auth, rate limit, "Actions cannot approve PRs" org
+          # setting off) must surface — otherwise we'd enqueue a merge that's
+          # blocked by branch protection and the PR sits stuck silently.
+          out=$(gh pr review --approve "$PR_URL" 2>&1) || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            if [[ "$out" == *"already approved"* ]]; then
+              echo "approve step skipped: already approved"
+            else
+              echo "$out" >&2
+              exit "$rc"
+            fi
+          fi
           gh pr merge --auto --squash "$PR_URL"
 
       - name: Comment on major updates — manual review required
