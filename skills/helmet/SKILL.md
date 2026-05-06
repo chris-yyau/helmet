@@ -2282,7 +2282,7 @@ name: Dependabot Auto-Merge
 # Auto-approves and enables auto-merge on Dependabot PRs for patch + minor
 # bumps. Major bumps get a comment and stay open for human review.
 #
-# Prerequisites (helmet sets these in B3 Repo Configuration):
+# Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
 # - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"

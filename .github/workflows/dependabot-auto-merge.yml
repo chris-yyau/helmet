@@ -3,14 +3,14 @@ name: Dependabot Auto-Merge
 # Auto-approves and enables auto-merge on Dependabot PRs for patch + minor
 # bumps. Major bumps get a comment and stay open for human review.
 #
-# Prerequisites (helmet sets these in B3 Repo Configuration):
+# Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
-# - Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests"
+# - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"
 #
 # Token note: Dependabot-triggered workflow runs receive a read-only
 # GITHUB_TOKEN by default. The explicit `permissions:` block below restores
-# write scope. `gh pr merge --auto` only enqueues -- actual merge waits for
+# write scope. `gh pr merge --auto` only enqueues — actual merge waits for
 # branch-protection checks, so no PAT is needed.
 
 on:
@@ -49,7 +49,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Approve and enable auto-merge for patch and minor updates
+      - name: Approve and enable auto-merge — patch + minor
         if: |
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
@@ -60,11 +60,11 @@ jobs:
           gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"
 
-      - name: Comment on major updates
+      - name: Comment on major updates — manual review required
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           gh pr comment "$PR_URL" --body \
-            "Major version bump detected. Auto-merge skipped - please review breaking changes manually."
+            "Major version bump detected. Auto-merge skipped — please review breaking changes manually."
