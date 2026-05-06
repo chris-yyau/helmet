@@ -1369,6 +1369,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
+| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
@@ -1501,16 +1502,37 @@ echo "Discovered checks:"
 echo "$ALL_CHECKS"
 
 # Step 2: Categorize checks.
-# Default policy: test + lint + security-critical → required; scanning + reporting → advisory.
-# Required (examples): "test", "test (ubuntu-latest)", "commitlint", "Actions security" (zizmor), "version-drift"
-# Advisory (examples): "Code security" (semgrep), "Dependency CVEs" (trivy), "IaC misconfig" (checkov)
+# Default policy: test + lint + security scanners → required; external AI bots → advisory.
+# Required (recommended baseline):
+#   - Test/lint:   "test", "test (ubuntu-latest)", "commitlint", "version-drift"
+#   - Security:    "Actions security" (zizmor), "Code security" (semgrep),
+#                  "Dependency CVEs" (trivy), "IaC misconfig" (checkov)
+# Advisory (recommended NOT required):
+#   - External AI: "CodeRabbit", "Greptile Review", "cubic · AI code reviewer"
+#                  (third-party availability — making them required causes
+#                  PRs to hang when the service is slow/unavailable)
+#   - "CodeScene": treated as advisory by convention (architectural signal,
+#                  not a correctness gate)
+#
+# Why scanners are required by default (added 2026-05-07):
+# Without scanners as required checks, a Dependabot bump of a vulnerable
+# npm/pip dep can merge on `test` pass alone — Trivy can flag the CVE on the
+# PR but it doesn't block merge unless required. Same applies to manual
+# clicks of "Enable auto-merge" on a Dependabot PR with a failing scanner.
+# Skipped jobs (helmet's job-level `if:` skip pattern in security.yml) still
+# count as passing, so requiring these does not introduce false-positive
+# blockage on PRs that don't touch security-relevant files.
 #
 # Present the discovered list to the user for confirmation before applying.
 # User confirms which checks should be required.
 
 # Step 3: Apply via API.
 # Build the contexts JSON array from confirmed required checks using jq (handles escaping).
-CONTEXTS=$(jq -nc '$ARGS.positional' --args "test (ubuntu-latest)" "test (macos-latest)" "commitlint")
+# Adjust the per-repo test names ("test (ubuntu-latest)", etc.) — the security
+# scanner names are the same across all helmet-onboarded repos.
+CONTEXTS=$(jq -nc '$ARGS.positional' --args \
+  "test (ubuntu-latest)" "test (macos-latest)" "commitlint" \
+  "Actions security" "Code security" "Dependency CVEs" "IaC misconfig")
 
 jq -n --argjson ctx "$CONTEXTS" \
   '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
@@ -3149,6 +3171,107 @@ for repo in $REPOS; do
 done
 ```
 
+### B4b. Retrofit Required Checks (existing helmet-onboarded repos)
+
+Pure branch-protection update — no code change, no PR. Use when an existing
+repo deployed helmet's `security.yml` but the scanners aren't required-checks.
+Idempotent: re-adds existing required checks unchanged.
+
+**Requires `bash`** (uses arrays — scanner names contain spaces, so POSIX
+word-splitting won't work). macOS ships bash 3.2+, sufficient.
+
+```bash
+#!/usr/bin/env bash
+set -u
+
+# Edit this list per use. Slugs are "OWNER/repo".
+REPOS=("OWNER/repo1" "OWNER/repo2")
+
+# Scanner names that helmet's security.yml emits (job-level skip pattern means
+# these always report a result on every PR — pass or skip-counted-as-pass).
+SCANNERS=("Actions security" "Code security" "Dependency CVEs" "IaC misconfig")
+
+for full in "${REPOS[@]}"; do
+  echo "── $full ──"
+  DEFAULT_BRANCH=$(gh api "repos/$full" --jq '.default_branch' 2>/dev/null) || {
+    echo "  ❌ cannot read repo metadata"; continue
+  }
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    echo "  ❌ no default branch resolved"; continue
+  fi
+
+  # Single fetch — extract both fields locally. Avoids a second round-trip
+  # and the TOCTOU window where strict and contexts could reflect different
+  # protection states if the policy is mutated between two API calls.
+  PROT_RAW=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" 2>/dev/null)
+  if [ -z "$PROT_RAW" ]; then
+    echo "  ❌ no branch protection on $DEFAULT_BRANCH (set up via B1b first)"; continue
+  fi
+  STRICT_CUR=$(echo "$PROT_RAW" | jq -c '.strict')
+  CURRENT=$(echo "$PROT_RAW" | jq -c '.contexts // []')
+
+  # Discover scanners that have actually run on the repo recently — only add
+  # ones with a recorded run, otherwise GitHub rejects them as required checks.
+  RECENT_SHA=$(gh api "repos/$full/commits" --jq '.[0].sha' 2>/dev/null)
+  AVAILABLE='[]'
+  if [ -n "$RECENT_SHA" ]; then
+    # --paginate is required: the default `/check-runs` page size is 30, so
+    # a commit with many CI jobs (per-OS test matrix, multiple bots) could
+    # silently drop a scanner from AVAILABLE. Aggregate all pages, dedup.
+    AVAILABLE_RAW=$(gh api --paginate "repos/$full/commits/$RECENT_SHA/check-runs" \
+      --jq '.check_runs[].name' 2>/dev/null \
+      | jq -Rs 'split("\n") | map(select(. != "")) | unique')
+    AVAILABLE=${AVAILABLE_RAW:-"[]"}
+  fi
+
+  # Merge: keep current + add scanners that exist in AVAILABLE
+  MERGED=$(jq -nc --argjson current "$CURRENT" --argjson available "$AVAILABLE" \
+    --argjson scanners "$(printf '%s\n' "${SCANNERS[@]}" | jq -Rcs 'split("\n") | map(select(. != ""))')" '
+    ($current + ($scanners | map(select(. as $s | $available | index($s)))) ) | unique')
+
+  echo "  strict (preserved): $STRICT_CUR"
+  echo "  current contexts:   $CURRENT"
+  echo "  merged contexts:    $MERGED"
+
+  # Apply (PATCH preserves other branch-protection settings; we propagate the
+  # current strict value so an intentional `strict: false` repo isn't silently
+  # changed). Echo a per-repo ❌ on failure so fleet runs surface errors
+  # instead of relying on stderr being noticed.
+  if ! jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" \
+        '{strict: $strict, contexts: $contexts}' \
+       | gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+           -X PATCH --input - --jq '{strict, contexts}'; then
+    echo "  ❌ PATCH failed for $full"
+  fi
+done
+```
+
+**Why PATCH not PUT:** PATCH on `/required_status_checks` only updates that
+sub-resource. PUT on `/protection` would require re-specifying every other
+branch-protection field (enforce_admins, restrictions, etc.) — easy to miss
+one and accidentally regress. The PATCH payload still must include all
+sub-resource fields you want set; that's why we read and propagate `strict`
+explicitly (default-overwriting it to `true` would flip a repo intentionally
+configured `strict: false`).
+
+**Verify across the fleet:**
+```bash
+for full in "${REPOS[@]}"; do
+  printf "%-40s " "$full"
+  default_b=$(gh api "repos/$full" --jq '.default_branch' 2>/dev/null)
+  if [ -z "$default_b" ]; then
+    echo "(cannot read repo metadata)"
+    continue
+  fi
+  # Print both: scanners_ok boolean (the actual policy compliance signal)
+  # AND the contexts list (for context). Without the boolean, a long
+  # contexts string can hide a missing scanner.
+  gh api "repos/$full/branches/$default_b/protection/required_status_checks" \
+    --jq '"scanners_ok=" + ((["Actions security","Code security","Dependency CVEs","IaC misconfig"] - .contexts | length == 0) | tostring) + "  contexts=[" + (.contexts | join(", ")) + "]"' \
+    2>/dev/null || echo "(no protection)"
+done
+```
+
 ### B5. Audit Pipeline Completeness
 
 ```bash
@@ -3171,12 +3294,31 @@ for dir in "$PROJECTS_DIR"/*/; do
   grep -q 'harden-runner' "$dir/.github/workflows/tests.yml" 2>/dev/null && harden="✅"
   [ -f "$dir/.releaserc.json" ] && semrel="✅"
   [ -f "$dir/commitlint.config.js" ] && commitlint_cfg="✅"
-  scorecard="❌"; security_md="❌"; dependabot="❌"; dep_automerge="❌"
+  scorecard="❌"; security_md="❌"; dependabot="❌"; dep_automerge="❌"; scanners_req="❌"
   [ -f "$dir/.github/workflows/scorecard.yml" ] && scorecard="✅"
   [ -f "$dir/SECURITY.md" ] && security_md="✅"
   [ -f "$dir/.github/dependabot.yml" ] && dependabot="✅"
   [ -f "$dir/.github/workflows/dependabot-auto-merge.yml" ] && dep_automerge="✅"
-  echo "$repo: tests=$tests codecov=$codecov pinact=$pinact sbom=$sbom license=$license vuln=$vuln LICENSE=$lic_file harden=$harden semrel=$semrel commitlint=$commitlint_cfg scorecard=$scorecard SECURITY=$security_md dependabot=$dependabot dep_automerge=$dep_automerge"
+  # Check whether all 4 scanners are in required-status-checks (best effort —
+  # remote API call; skip silently if no remote or no protection).
+  if remote_full=$(git -C "$dir" remote get-url origin 2>/dev/null | sed 's|https://github.com/||;s|\.git$||') \
+     && [ -n "$remote_full" ]; then
+    default_b=$(gh api "repos/$remote_full" --jq '.default_branch' 2>/dev/null)
+    if [ -n "$default_b" ]; then
+      ctx=$(gh api "repos/$remote_full/branches/$default_b/protection/required_status_checks" \
+        --jq '.contexts // []' 2>/dev/null)
+      # Set-difference: empty result means every required scanner is present.
+      # Same idiom as B1b's audit checklist row — kept symmetric so that the
+      # round-2 buggy variant (`(index() and ...) != null`, which returned
+      # true for ALL inputs) doesn't get recreated by copy-paste.
+      if [ -n "$ctx" ] && echo "$ctx" | jq -e '
+        ["Actions security","Code security","Dependency CVEs","IaC misconfig"] - . | length == 0
+      ' >/dev/null 2>&1; then
+        scanners_req="✅"
+      fi
+    fi
+  fi
+  echo "$repo: tests=$tests codecov=$codecov pinact=$pinact sbom=$sbom license=$license vuln=$vuln LICENSE=$lic_file harden=$harden semrel=$semrel commitlint=$commitlint_cfg scorecard=$scorecard SECURITY=$security_md dependabot=$dependabot dep_automerge=$dep_automerge scanners_req=$scanners_req"
 done
 ```
 
@@ -3270,6 +3412,7 @@ done
 - **`pull_request` over `pull_request_target`** — never run untrusted PR code with write permissions. All workflows use `pull_request`
 - **External `check-pinned-uses.sh` over inline grep** — handles quoted `uses:` values, reusable across repos, easier to test. Deploy to `.github/scripts/`. Exempt local refs (`./`) and `docker://`
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
+- **Security scanners as required checks (added 2026-05-07)** — helmet's default branch-protection policy now requires `Actions security` (zizmor), `Code security` (semgrep), `Dependency CVEs` (trivy), and `IaC misconfig` (checkov). Previously they ran on PRs as advisory. The shift addresses two real bypass risks: (1) Dependabot bumps of vulnerable npm/pip deps could merge on `test` pass alone — Trivy flagged the CVE on the PR but didn't block merge. (2) Manual click of "Enable auto-merge" on a Dependabot PR with a failing scanner would silently merge once required checks (only `test`) passed. Helmet's job-level `if:` skip pattern in `security.yml` means scanners always report a result (pass or skip-counted-as-pass) on every PR, so requiring them does not introduce false-positive blockage on PRs that don't touch security-relevant files. The retrofit (B4b) is idempotent on `/required_status_checks` (PATCH not PUT) so re-running is safe. External AI reviewers (CodeRabbit, Greptile, cubic, CodeScene) stay advisory — their availability is third-party and required-check on them would hang PRs when the service is slow
 - **Dependabot `commit-message.prefix` and `labels`** — `chore(actions)` prefix for conventional commits; `dependencies` + `github-actions` labels for filtering. Dependabot reads `@<sha> # vX.Y.Z` inline comments and updates both SHA + comment
 - **Dependabot auto-merge over AI review for patch+minor (added 2026-05-07)** — Dependabot's PR body already contains release notes + compatibility score; for patch and minor bumps, an LLM review adds little signal at non-trivial token cost. The `dependabot-auto-merge.yml` workflow uses `dependabot/fetch-metadata` to gate by `update-type` and only auto-approves+queues patch/minor. Major bumps still drop a comment and stay open for human review. Workflow uses `pull_request` (not `pull_request_target`) with explicit `permissions:` to override Dependabot's default read-only `GITHUB_TOKEN` — preserves helmet's "never `pull_request_target`" rule. `gh pr merge --auto` only enqueues; the actual merge waits for branch-protection checks, so no PAT is needed
 - **Idempotency on Dependabot re-runs (added 2026-05-07, post-Greptile fix)** — Dependabot rebases re-trigger the workflow on the same PR. Three paths need explicit idempotency guards: (1) `gh pr review --approve` exits non-zero with "already approved" when the prior approval wasn't dismissed by branch protection; (2) `gh pr merge --auto --squash` exits non-zero with "auto merge is already enabled" once auto-merge has been enabled by a prior run — same shape of bug, symmetric to (1). Both need stderr capture and substring pattern-match: tolerate the specific idempotency strings only, surface every other failure (auth, rate limit, "Actions cannot approve PRs" org setting off, branch protection misconfig). A naive `|| echo` mask would silently swallow real errors; missing the symmetric merge-enqueue guard would fail the whole step on every rebase after the first run. (3) `gh pr comment` always creates a new comment, so the major-bump path needs a grep-based check against existing `github-actions[bot]` comments to avoid duplicate notifications. The original PR (#23) shipped without any of these — pr-grind declared clean based on Greptile's check-pass status without reading the actual review body, which contained P1 findings. The lesson is process-level: **pr-grind must read AI-reviewer comment bodies, not just check-status flips**. Greptile posts as issue comments (not inline review threads), so a `reviewThreads` GraphQL filter misses everything; use `gh pr view --comments` plus `gh api repos/.../pulls/N/reviews` to get full coverage
