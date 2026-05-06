@@ -1323,6 +1323,7 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **OpenSSF Scorecard** | Security health score (18 checks, weekly cron + push) | `.github/workflows/scorecard.yml` |
 | **SECURITY.md** | Vulnerability disclosure policy | `SECURITY.md` at repo root |
 | **Dependabot** | Security alerts + automated version update PRs (GitHub-native) | `.github/dependabot.yml` |
+| **Dependabot auto-merge** | Auto-approves patch+minor bumps; majors stay open for human review | `.github/workflows/dependabot-auto-merge.yml` |
 | **Commit Signing (SSH)** | Verified commits with SSH key signatures | `~/.gitconfig` (global) + GitHub signing key |
 | **checkov (local)** | IaC misconfiguration scan — **BLOCK** on commit | `~/.claude/hooks/pre-commit-iac-scan.sh` |
 | **zizmor (local)** | GitHub Actions workflow security — WARN on commit | `~/.claude/hooks/pre-commit-iac-scan.sh` |
@@ -1367,6 +1368,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | Release workflow | `[ -f .github/workflows/release.yml ]` | File exists (N/A for non-release repos) |
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
+| Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
@@ -2228,10 +2230,11 @@ Add `SECURITY.md` at repo root with:
 
 #### L. Dependabot (all repos — GitHub-native)
 
-Dependabot provides two layers, both now deployed:
+Dependabot provides three layers, all now deployed:
 
 1. **Security alerts** — flags vulnerable dependencies in the Security tab (GitHub-native, always on)
 2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed to all 9 repos)
+3. **Auto-merge for patch + minor** — `.github/workflows/dependabot-auto-merge.yml` approves and queues safe bumps automatically; major bumps get a comment and stay open for human review
 
 **Deployed config** (`.github/dependabot.yml`):
 
@@ -2270,6 +2273,93 @@ updates:
 - **Trivy** scans in CI on every push — catches vulns at build time
 - **Dependabot** monitors continuously on GitHub — catches vulns between pushes
 - **OpenSSF Scorecard** checks whether Dependabot/similar is enabled — scores the practice
+
+**Auto-merge workflow** (`.github/workflows/dependabot-auto-merge.yml`):
+
+```yaml
+name: Dependabot Auto-Merge
+
+# Auto-approves and enables auto-merge on Dependabot PRs for patch + minor
+# bumps. Major bumps get a comment and stay open for human review.
+#
+# Prerequisites (helmet sets these in B3 Repo Configuration):
+# - allow_auto_merge: true on the repo
+# - Branch protection with required status checks (strict: true)
+# - Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"
+#
+# Token note: Dependabot-triggered workflow runs receive a read-only
+# GITHUB_TOKEN by default. The explicit `permissions:` block below restores
+# write scope. `gh pr merge --auto` only enqueues — actual merge waits for
+# branch-protection checks, so no PAT is needed.
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  auto-merge:
+    name: Approve and enqueue Dependabot PR
+    # Use the PR object's user.login (immutable) instead of github.actor (spoofable)
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write          # required to enable auto-merge on the branch
+      pull-requests: write     # required to approve PR + enqueue auto-merge
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        with:
+          egress-policy: audit
+
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve and enable auto-merge — patch + minor
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+
+      - name: Comment on major updates — manual review required
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "Major version bump detected. Auto-merge skipped — please review breaking changes manually."
+```
+
+**Key points:**
+- **`if: github.event.pull_request.user.login == 'dependabot[bot]'`** — workflow runs on every PR but the only job is gated; non-Dependabot PRs see the job as skipped (counts as passing for branch protection). `pull_request.user.login` is read from the immutable PR object; `github.actor` is spoofable (zizmor `bot-conditions` audit), so prefer the former
+- **`fetch-metadata` reports the highest update-type** across grouped updates — if any single dep in a grouped PR is a major bump, the whole PR routes to the major branch
+- **Approval works because GITHUB_TOKEN posts as `github-actions[bot]`**, a different actor than `dependabot[bot]` — GitHub allows cross-actor approval. Self-approval (same actor) would be rejected
+- **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after required checks pass — same gate as a human-approved PR
+- **No PAT, no `pull_request_target`** — explicit `permissions:` on a `pull_request` workflow is enough for Dependabot's restricted-token case; preserves helmet's "never `pull_request_target`" rule
+- **Idempotent**: re-runs of the workflow on the same PR just re-approve and re-enable auto-merge (both no-ops if already done)
+
+**SHA verification:**
+- `step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df` → v2.18.0 (matches all other helmet workflows)
+- `dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98` → v3.1.0
 
 #### M. Commit Signing with SSH (all machines)
 
@@ -3041,11 +3131,12 @@ for dir in "$PROJECTS_DIR"/*/; do
   grep -q 'harden-runner' "$dir/.github/workflows/tests.yml" 2>/dev/null && harden="✅"
   [ -f "$dir/.releaserc.json" ] && semrel="✅"
   [ -f "$dir/commitlint.config.js" ] && commitlint_cfg="✅"
-  scorecard="❌"; security_md="❌"; dependabot="❌"
+  scorecard="❌"; security_md="❌"; dependabot="❌"; dep_automerge="❌"
   [ -f "$dir/.github/workflows/scorecard.yml" ] && scorecard="✅"
   [ -f "$dir/SECURITY.md" ] && security_md="✅"
   [ -f "$dir/.github/dependabot.yml" ] && dependabot="✅"
-  echo "$repo: tests=$tests codecov=$codecov pinact=$pinact sbom=$sbom license=$license vuln=$vuln LICENSE=$lic_file harden=$harden semrel=$semrel commitlint=$commitlint_cfg scorecard=$scorecard SECURITY=$security_md dependabot=$dependabot"
+  [ -f "$dir/.github/workflows/dependabot-auto-merge.yml" ] && dep_automerge="✅"
+  echo "$repo: tests=$tests codecov=$codecov pinact=$pinact sbom=$sbom license=$license vuln=$vuln LICENSE=$lic_file harden=$harden semrel=$semrel commitlint=$commitlint_cfg scorecard=$scorecard SECURITY=$security_md dependabot=$dependabot dep_automerge=$dep_automerge"
 done
 ```
 
@@ -3140,6 +3231,7 @@ done
 - **External `check-pinned-uses.sh` over inline grep** — handles quoted `uses:` values, reusable across repos, easier to test. Deploy to `.github/scripts/`. Exempt local refs (`./`) and `docker://`
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
 - **Dependabot `commit-message.prefix` and `labels`** — `chore(actions)` prefix for conventional commits; `dependencies` + `github-actions` labels for filtering. Dependabot reads `@<sha> # vX.Y.Z` inline comments and updates both SHA + comment
+- **Dependabot auto-merge over AI review for patch+minor (added 2026-05-07)** — Dependabot's PR body already contains release notes + compatibility score; for patch and minor bumps, an LLM review adds little signal at non-trivial token cost. The `dependabot-auto-merge.yml` workflow uses `dependabot/fetch-metadata` to gate by `update-type` and only auto-approves+queues patch/minor. Major bumps still drop a comment and stay open for human review. Workflow uses `pull_request` (not `pull_request_target`) with explicit `permissions:` to override Dependabot's default read-only `GITHUB_TOKEN` — preserves helmet's "never `pull_request_target`" rule. `gh pr merge --auto` only enqueues; the actual merge waits for branch-protection checks, so no PAT is needed
 - **No OIDC needed yet (no CI-based deployment)** — all deployments use git-push → platform auto-deploy (Vercel/Netlify), so CI never touches deployment credentials. Existing `id-token: write` is only for Scorecard (OpenSSF API) and Cosign (keyless signing in forge). When CI-based deployment is added, switch to OIDC with trust policy locked to specific repo + environment (no wildcards). Never use static cloud credentials (AWS keys, GCP service accounts) as GitHub secrets for deployment
 - **Workflow changes are a high-risk path** — `.github/workflows/**` modifications get explicit SHA pin verification + zizmor scan in the `zizmor` job of `security.yml`. AI-generated workflows frequently use tag refs (`@v4`) instead of full SHA pins; the grep-based verify step catches this before merge. GitHub natively supports "Require actions to be pinned to a full-length commit SHA" at org/repo level — enable this in repo settings for belt-and-suspenders enforcement alongside CI. Added 2026-03-27
 - **Squash-only merges** — `allow_squash_merge: true`, merge commits and rebase disabled. Clean single-commit PRs, linear history. `allow_update_branch: true` suggests keeping PRs current. `delete_branch_on_merge: true` auto-cleans merged branches
