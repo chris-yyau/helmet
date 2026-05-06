@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/chris-yyau/helmet/compare/v1.13.0...v1.13.1) (2026-05-06)
+
+
+### Bug Fixes
+
+* **helmet:** make Dependabot auto-merge workflow idempotent on re-runs ([#24](https://github.com/chris-yyau/helmet/issues/24)) ([2c9d23b](https://github.com/chris-yyau/helmet/commit/2c9d23b2e35b0283ae5f20c07623527eff9c69af)), closes [#23](https://github.com/chris-yyau/helmet/issues/23) [#1](https://github.com/chris-yyau/helmet/issues/1)
+
 # [1.13.0](https://github.com/chris-yyau/helmet/compare/v1.12.1...v1.13.0) (2026-05-06)
 
 
