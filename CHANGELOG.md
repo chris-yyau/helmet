@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/chris-yyau/helmet/compare/v1.12.1...v1.13.0) (2026-05-06)
+
+
+### Features
+
+* **helmet:** add Dependabot auto-merge workflow for patch+minor bumps ([#23](https://github.com/chris-yyau/helmet/issues/23)) ([5f4d81f](https://github.com/chris-yyau/helmet/commit/5f4d81f91c458e8dd852f54be21a03718f98e79a))
+
 ## [1.12.1](https://github.com/chris-yyau/helmet/compare/v1.12.0...v1.12.1) (2026-04-16)
 
 
