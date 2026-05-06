@@ -1369,7 +1369,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
-| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts \| (index("Actions security") and index("Code security") and index("Dependency CVEs") and index("IaC misconfig")) != null'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not) |
+| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c \| (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c \| length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts` |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
@@ -3253,7 +3253,12 @@ configured `strict: false`).
 ```bash
 for full in "${REPOS[@]}"; do
   printf "%-40s " "$full"
-  gh api "repos/$full/branches/main/protection/required_status_checks" \
+  default_b=$(gh api "repos/$full" --jq '.default_branch' 2>/dev/null)
+  if [ -z "$default_b" ]; then
+    echo "(cannot read repo metadata)"
+    continue
+  fi
+  gh api "repos/$full/branches/$default_b/protection/required_status_checks" \
     --jq '.contexts | join(", ")' 2>/dev/null || echo "(no protection)"
 done
 ```
