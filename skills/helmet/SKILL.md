@@ -2336,7 +2336,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr review --approve "$PR_URL"
+          # Re-runs hit "already approved" (non-zero exit) when the prior approval
+          # wasn't dismissed. Tolerate that so the merge enqueue still runs.
+          gh pr review --approve "$PR_URL" || echo "approve step skipped (likely already approved)"
           gh pr merge --auto --squash "$PR_URL"
 
       - name: Comment on major updates — manual review required
@@ -2345,6 +2347,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
+          # Idempotency guard: Dependabot rebases re-trigger this workflow on
+          # major-bump PRs. Without the guard, every rebase posts a duplicate
+          # "Major version bump detected" comment.
+          if gh pr view "$PR_URL" --json comments \
+              --jq '.comments[] | select(.author.login == "github-actions[bot]") | .body' \
+              | grep -qF "Major version bump detected"; then
+            echo "already commented on this PR — skipping"
+            exit 0
+          fi
           gh pr comment "$PR_URL" --body \
             "Major version bump detected. Auto-merge skipped — please review breaking changes manually."
 ```
@@ -2355,7 +2366,7 @@ jobs:
 - **Approval works because GITHUB_TOKEN posts as `github-actions[bot]`**, a different actor than `dependabot[bot]` — GitHub allows cross-actor approval. Self-approval (same actor) would be rejected
 - **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after required checks pass — same gate as a human-approved PR
 - **No PAT, no `pull_request_target`** — explicit `permissions:` on a `pull_request` workflow is enough for Dependabot's restricted-token case; preserves helmet's "never `pull_request_target`" rule
-- **Idempotent**: re-runs of the workflow on the same PR just re-approve and re-enable auto-merge (both no-ops if already done)
+- **Idempotent under re-runs**: Dependabot rebases trigger workflow re-runs on the same PR. Both branches handle it explicitly: the patch+minor step tolerates "already approved" via `|| echo` (re-approve fails non-zero in `gh`, this keeps the subsequent `gh pr merge --auto` step alive); the major-bump step grep-checks existing `github-actions[bot]` comments before posting to avoid duplicate "Major version bump detected" spam
 
 **SHA verification:**
 - `step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df` → v2.18.0 (matches all other helmet workflows)
@@ -3232,6 +3243,7 @@ done
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
 - **Dependabot `commit-message.prefix` and `labels`** — `chore(actions)` prefix for conventional commits; `dependencies` + `github-actions` labels for filtering. Dependabot reads `@<sha> # vX.Y.Z` inline comments and updates both SHA + comment
 - **Dependabot auto-merge over AI review for patch+minor (added 2026-05-07)** — Dependabot's PR body already contains release notes + compatibility score; for patch and minor bumps, an LLM review adds little signal at non-trivial token cost. The `dependabot-auto-merge.yml` workflow uses `dependabot/fetch-metadata` to gate by `update-type` and only auto-approves+queues patch/minor. Major bumps still drop a comment and stay open for human review. Workflow uses `pull_request` (not `pull_request_target`) with explicit `permissions:` to override Dependabot's default read-only `GITHUB_TOKEN` — preserves helmet's "never `pull_request_target`" rule. `gh pr merge --auto` only enqueues; the actual merge waits for branch-protection checks, so no PAT is needed
+- **Idempotency on Dependabot re-runs (added 2026-05-07, post-Greptile fix)** — Dependabot rebases re-trigger the workflow on the same PR. Two paths need explicit idempotency guards: (1) `gh pr review --approve` exits non-zero with "already approved" when the prior approval wasn't dismissed by branch protection — without `|| echo`, this aborts the step before `gh pr merge --auto` runs, leaving the PR approved-but-not-queued; (2) `gh pr comment` always creates a new comment, so the major-bump path needs a grep-based check against existing `github-actions[bot]` comments to avoid duplicate notifications. Both bugs were missed by the initial PR — the round-1 Bugs agent flagged the approve idempotency at confidence 80 (LOW), which the litmus rules treat as "advisory, don't block"; in practice that means surface to the user, not silently ship. The major-bump duplicate-comment issue was caught only after merge by Greptile's review body (not by the check status alone). Lesson: pr-grind must read AI-reviewer comment bodies, not just check-status flips
 - **No OIDC needed yet (no CI-based deployment)** — all deployments use git-push → platform auto-deploy (Vercel/Netlify), so CI never touches deployment credentials. Existing `id-token: write` is only for Scorecard (OpenSSF API) and Cosign (keyless signing in forge). When CI-based deployment is added, switch to OIDC with trust policy locked to specific repo + environment (no wildcards). Never use static cloud credentials (AWS keys, GCP service accounts) as GitHub secrets for deployment
 - **Workflow changes are a high-risk path** — `.github/workflows/**` modifications get explicit SHA pin verification + zizmor scan in the `zizmor` job of `security.yml`. AI-generated workflows frequently use tag refs (`@v4`) instead of full SHA pins; the grep-based verify step catches this before merge. GitHub natively supports "Require actions to be pinned to a full-length commit SHA" at org/repo level — enable this in repo settings for belt-and-suspenders enforcement alongside CI. Added 2026-03-27
 - **Squash-only merges** — `allow_squash_merge: true`, merge commits and rebase disabled. Clean single-commit PRs, linear history. `allow_update_branch: true` suggests keeping PRs current. `delete_branch_on_merge: true` auto-cleans merged branches

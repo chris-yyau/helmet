@@ -57,7 +57,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr review --approve "$PR_URL"
+          # Re-runs hit "already approved" (non-zero exit) when the prior approval
+          # wasn't dismissed. Tolerate that so the merge enqueue still runs.
+          gh pr review --approve "$PR_URL" || echo "approve step skipped (likely already approved)"
           gh pr merge --auto --squash "$PR_URL"
 
       - name: Comment on major updates — manual review required
@@ -66,5 +68,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
+          # Idempotency guard: Dependabot rebases re-trigger this workflow on
+          # major-bump PRs. Without the guard, every rebase posts a duplicate
+          # "Major version bump detected" comment.
+          if gh pr view "$PR_URL" --json comments \
+              --jq '.comments[] | select(.author.login == "github-actions[bot]") | .body' \
+              | grep -qF "Major version bump detected"; then
+            echo "already commented on this PR — skipping"
+            exit 0
+          fi
           gh pr comment "$PR_URL" --body \
             "Major version bump detected. Auto-merge skipped — please review breaking changes manually."
