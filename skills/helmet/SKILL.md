@@ -2568,7 +2568,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          set -e
+          set -eo pipefail
           if [ "$EVENT_NAME" = "push" ]; then
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -2581,7 +2581,8 @@ jobs:
             exit 0
           fi
           # Pipe directly to grep to avoid word-splitting on filenames with spaces.
-          # Pattern must align with the on: push: paths: globs above.
+          # Pattern is a superset of on: push: paths: globs above — PR scanning is intentionally
+          # broader (pyproject.toml, uv.lock, Cargo.lock, Package.resolved added) for safety.
           if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved'; then
             echo "security=true" >> "$GITHUB_OUTPUT"
           else
@@ -2591,7 +2592,7 @@ jobs:
   trivy:
     name: Dependency CVEs
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2626,7 +2627,7 @@ jobs:
   semgrep:
     name: Code security
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2647,7 +2648,7 @@ jobs:
   checkov:
     name: IaC misconfig
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2668,7 +2669,7 @@ jobs:
   zizmor:
     name: Actions security
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
