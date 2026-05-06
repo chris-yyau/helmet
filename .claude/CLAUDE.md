@@ -38,6 +38,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypass of required checks → creates `admin-bypass` issue |
+| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | Auto-approve + `gh pr merge --auto --squash` for patch/minor bumps; comment + leave open for major |
 
 ## Conventions
 
