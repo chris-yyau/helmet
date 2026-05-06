@@ -3298,9 +3298,12 @@ for dir in "$PROJECTS_DIR"/*/; do
     if [ -n "$default_b" ]; then
       ctx=$(gh api "repos/$remote_full/branches/$default_b/protection/required_status_checks" \
         --jq '.contexts // []' 2>/dev/null)
+      # Set-difference: empty result means every required scanner is present.
+      # Same idiom as B1b's audit checklist row — kept symmetric so that the
+      # round-2 buggy variant (`(index() and ...) != null`, which returned
+      # true for ALL inputs) doesn't get recreated by copy-paste.
       if [ -n "$ctx" ] && echo "$ctx" | jq -e '
-        (index("Actions security") and index("Code security")
-         and index("Dependency CVEs") and index("IaC misconfig"))
+        ["Actions security","Code security","Dependency CVEs","IaC misconfig"] - . | length == 0
       ' >/dev/null 2>&1; then
         scanners_req="✅"
       fi
