@@ -57,8 +57,39 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          gh pr review --approve "$PR_URL"
-          gh pr merge --auto --squash "$PR_URL"
+          # Both gh subcommands need symmetric idempotency handling: re-runs
+          # hit "already approved" on review and "already enabled" on the merge
+          # enqueue. Tolerate ONLY those specific strings; surface all other
+          # failures (auth, rate limit, org setting off) so misconfiguration
+          # is visible instead of silently leaving PRs stuck.
+
+          out=$(gh pr review --approve "$PR_URL" 2>&1) || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            if [[ "$out" == *"already approved"* ]]; then
+              echo "approve step skipped: already approved"
+            else
+              echo "$out" >&2
+              exit "$rc"
+            fi
+          else
+            # Echo success output so the normal "✓ Approved pull request #N"
+            # line stays visible in the workflow logs (otherwise this step
+            # produces no output on first runs).
+            echo "$out"
+          fi
+
+          unset rc
+          out=$(gh pr merge --auto --squash "$PR_URL" 2>&1) || rc=$?
+          if [ "${rc:-0}" -ne 0 ]; then
+            if [[ "$out" == *"already enabled"* ]]; then
+              echo "auto-merge enqueue skipped: already enabled"
+            else
+              echo "$out" >&2
+              exit "$rc"
+            fi
+          else
+            echo "$out"
+          fi
 
       - name: Comment on major updates — manual review required
         if: steps.metadata.outputs.update-type == 'version-update:semver-major'
@@ -66,5 +97,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
+          # Idempotency guard: Dependabot rebases re-trigger this workflow on
+          # major-bump PRs. Without the guard, every rebase posts a duplicate
+          # "Major version bump detected" comment.
+          if gh pr view "$PR_URL" --json comments \
+              --jq '.comments[] | select(.author.login == "github-actions[bot]") | .body' \
+              | grep -qF "Major version bump detected"; then
+            echo "already commented on this PR — skipping"
+            exit 0
+          fi
           gh pr comment "$PR_URL" --body \
             "Major version bump detected. Auto-merge skipped — please review breaking changes manually."
