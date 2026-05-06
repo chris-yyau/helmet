@@ -48,7 +48,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 - **Permissions:** Permissions explicitly scoped per workflow; `permissions: {}` where possible, minimum required scopes granted per-job
 - **Dependabot:** Configured for `github-actions` ecosystem
 - **Required checks:** `version-drift`, `commitlint`, `Actions security` (zizmor) — enforced via branch protection (`strict: true`, `enforce_admins: false`)
-- **Security workflow pattern:** PR trigger has no path filter (workflow always starts); a `changes` job detects security-relevant files; scanner jobs skip via `if:` when no relevant files changed. GitHub treats skipped jobs as passing for required checks. Push trigger retains path filters
+- **Security workflow pattern:** PR trigger has no path filter (workflow always starts); a `changes` job detects security-relevant files; scanner jobs gate on `if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')` — they run when security-relevant files changed OR when the `changes` job itself fails/cancels (fail-closed: a broken detector cannot silently bypass required checks). GitHub treats skipped jobs as passing for required checks, so irrelevant PRs cleanly skip. Push trigger retains path filters
 
 ## Version Sync
 
