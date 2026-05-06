@@ -2350,6 +2350,11 @@ jobs:
               echo "$out" >&2
               exit "$rc"
             fi
+          else
+            # Echo success output so the normal "✓ Approved pull request #N"
+            # line stays visible in the workflow logs (otherwise this step
+            # produces no output on first runs).
+            echo "$out"
           fi
 
           unset rc
@@ -2361,6 +2366,8 @@ jobs:
               echo "$out" >&2
               exit "$rc"
             fi
+          else
+            echo "$out"
           fi
 
       - name: Comment on major updates — manual review required
