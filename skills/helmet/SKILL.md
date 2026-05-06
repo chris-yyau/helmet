@@ -1369,7 +1369,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
-| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c \| (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c \| length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts` |
+| Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
@@ -3200,17 +3200,15 @@ for full in "${REPOS[@]}"; do
     echo "  ❌ no default branch resolved"; continue
   fi
 
-  # Read current strict flag (preserve — don't silently flip a repo's policy)
-  STRICT_CUR=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-    --jq '.strict' 2>/dev/null)
-  if [ -z "$STRICT_CUR" ]; then
+  # Single fetch — extract both fields locally. Avoids a second round-trip
+  # and the TOCTOU window where strict and contexts could reflect different
+  # protection states if the policy is mutated between two API calls.
+  PROT_RAW=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" 2>/dev/null)
+  if [ -z "$PROT_RAW" ]; then
     echo "  ❌ no branch protection on $DEFAULT_BRANCH (set up via B1b first)"; continue
   fi
-
-  # Read current required contexts (default to empty array if missing)
-  CURRENT=$(gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-    --jq '.contexts // []' 2>/dev/null)
-  CURRENT=${CURRENT:-"[]"}
+  STRICT_CUR=$(echo "$PROT_RAW" | jq -c '.strict')
+  CURRENT=$(echo "$PROT_RAW" | jq -c '.contexts // []')
 
   # Discover scanners that have actually run on the repo recently — only add
   # ones with a recorded run, otherwise GitHub rejects them as required checks.
@@ -3258,8 +3256,12 @@ for full in "${REPOS[@]}"; do
     echo "(cannot read repo metadata)"
     continue
   fi
+  # Print both: scanners_ok boolean (the actual policy compliance signal)
+  # AND the contexts list (for context). Without the boolean, a long
+  # contexts string can hide a missing scanner.
   gh api "repos/$full/branches/$default_b/protection/required_status_checks" \
-    --jq '.contexts | join(", ")' 2>/dev/null || echo "(no protection)"
+    --jq '"scanners_ok=" + ((["Actions security","Code security","Dependency CVEs","IaC misconfig"] - .contexts | length == 0) | tostring) + "  contexts=[" + (.contexts | join(", ")) + "]"' \
+    2>/dev/null || echo "(no protection)"
 done
 ```
 
