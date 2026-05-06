@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/chris-yyau/helmet/compare/v1.13.1...v1.14.0) (2026-05-06)
+
+
+### Features
+
+* **helmet:** make security scanners required-checks by default ([#25](https://github.com/chris-yyau/helmet/issues/25)) ([accdf9a](https://github.com/chris-yyau/helmet/commit/accdf9a00a98a85ba2a88cdf078d223347ac4e0b))
+
 ## [1.13.1](https://github.com/chris-yyau/helmet/compare/v1.13.0...v1.13.1) (2026-05-06)
 
 
