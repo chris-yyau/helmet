@@ -1551,7 +1551,7 @@ Add patterns for any additional third-party actions the repo uses (e.g., `anchor
 - **Job name resolution:** GitHub uses the `name:` field if present, otherwise the YAML job key. Example: a job key `zizmor` with `name: Actions security` appears as "Actions security" in status checks. Always verify with `gh api "repos/$OWNER/$REPO/commits/<sha>/check-runs" --jq '.check_runs[].name' | sort -u`
 - **Required check prerequisite:** each check must have at least one recorded run on the repository for GitHub to accept it as a required check. Run workflows at least once before setting protection
 - `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). Set `true` for team repos
-- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval
+- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. **Also load-bearing for `dependabot-auto-merge.yml`**: that workflow does not auto-approve, so `gh pr merge --auto` only fires when the branch protection has no PR-review requirement (or Dependabot has bypass). Enabling required reviews without a Dependabot bypass leaves Dependabot PRs queued forever
 - Without branch protection, `allow_auto_merge` merges immediately with no checks — always pair them
 - **Renaming a job's `name:` field silently breaks required check enforcement** — the old name stays in branch protection but no longer matches any check, causing PRs to hang. Always update branch protection when renaming job display names
 
@@ -2255,7 +2255,7 @@ Add `SECURITY.md` at repo root with:
 Dependabot provides three layers, all now deployed:
 
 1. **Security alerts** — flags vulnerable dependencies in the Security tab (GitHub-native, always on)
-2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed to all 9 repos)
+2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed across all helmet-onboarded repos)
 3. **Auto-merge for safe bumps** — `.github/workflows/dependabot-auto-merge.yml` enqueues auto-merge (no auto-approve) for: patch bumps in any ecosystem, plus minor bumps that are dev dependencies, indirect dependencies, or github_actions. Major bumps and production-direct minor bumps get a comment and stay open for manual review
 
 **Deployed config** (`.github/dependabot.yml`):
@@ -2472,7 +2472,7 @@ ${REASON}. Auto-merge skipped — please review changes manually before merging.
 - **`fetch-metadata` reports the highest update-type** across grouped updates — if any single dep in a grouped PR is a major bump, the whole PR routes to the major branch
 - **No auto-approve** — `gh pr review --approve` is intentionally absent. Auto-merge enqueues directly via `gh pr merge --auto --squash`. Required-PR-reviews must therefore be off (or Dependabot must have bypass) for the merge to fire. Keeps `can_approve_pull_request_reviews: false` as the safer default — workflows aren't reviewers
 - **Tiered gating**: patch/minor/major × dependency-type/ecosystem matrix. Patches always auto-merge; minors only auto-merge for dev deps, indirect deps, or github_actions ecosystem; majors and production-direct minors get a comment and stay open. The production-direct minor case is the highest-risk minor category and warrants a human read of the changelog
-- **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after required checks pass — same gate as a human-approved PR
+- **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after all required status checks pass AND no PR-review requirement is configured. Helmet's branch protection sets `required_pull_request_reviews: null` (B1b), so checks-only is the gate — but a downstream repo that re-enables required reviews without a Dependabot bypass will leave PRs queued forever (intentional fail-stuck rather than fail-merge)
 - **No PAT, no `pull_request_target`** — explicit `permissions:` on a `pull_request` workflow is enough for Dependabot's restricted-token case; preserves helmet's "never `pull_request_target`" rule
 - **Idempotent under re-runs**: Dependabot rebases trigger workflow re-runs on the same PR. (1) `gh pr merge --auto --squash` pattern-matches its stderr — only the "already enabled" idempotency string is tolerated; all other failures (auth, rate limit, branch protection misconfig) abort the step so the user sees them. (2) The comment step uses a hidden HTML marker (`<!-- dependabot-auto-merge: manual-review-required -->`) for the duplicate-check, so the same marker matches both major-bump and production-minor comment variants — rebases don't re-comment. The dedup check uses the canonical fail-closed pattern (capture-then-test, explicit grep status via `case`) — same shape as `security.yml`'s `changes` detector, so a transient `gh pr view` failure surfaces as a `::warning::` instead of silently re-commenting on every rebase
 
