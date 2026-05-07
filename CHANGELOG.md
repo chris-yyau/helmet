@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/chris-yyau/helmet/compare/v1.15.0...v1.15.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **helmet:** YAML parse error in Dependabot auto-merge comment body ([#30](https://github.com/chris-yyau/helmet/issues/30)) ([0f52754](https://github.com/chris-yyau/helmet/commit/0f527549ed3af02a95c0dab47ff4005c4dd93872)), closes [#29](https://github.com/chris-yyau/helmet/issues/29) [#22](https://github.com/chris-yyau/helmet/issues/22)
+
 # [1.15.0](https://github.com/chris-yyau/helmet/compare/v1.14.3...v1.15.0) (2026-05-07)
 
 
