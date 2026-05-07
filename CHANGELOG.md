@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/chris-yyau/helmet/compare/v1.14.3...v1.15.0) (2026-05-07)
+
+
+### Features
+
+* **helmet:** tiered Dependabot auto-merge gating, drop auto-approve ([#29](https://github.com/chris-yyau/helmet/issues/29)) ([24bc7f7](https://github.com/chris-yyau/helmet/commit/24bc7f7bd47ded65a1bdecf66cc97cd9c34a73b2)), closes [#23](https://github.com/chris-yyau/helmet/issues/23)
+
 ## [1.14.3](https://github.com/chris-yyau/helmet/compare/v1.14.2...v1.14.3) (2026-05-07)
 
 
