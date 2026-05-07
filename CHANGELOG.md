@@ -1,3 +1,10 @@
+## [1.14.2](https://github.com/chris-yyau/helmet/compare/v1.14.1...v1.14.2) (2026-05-07)
+
+
+### Bug Fixes
+
+* **security:** close fail-open from set -e suspension in if-condition ([#27](https://github.com/chris-yyau/helmet/issues/27)) ([a9791a5](https://github.com/chris-yyau/helmet/commit/a9791a5ca5b34725d9bf1eb7a9f4766cd2760b37)), closes [#26](https://github.com/chris-yyau/helmet/issues/26) [growth-engine#45](https://github.com/growth-engine/issues/45) [chrisyau.me#105](https://github.com/chrisyau.me/issues/105)
+
 ## [1.14.1](https://github.com/chris-yyau/helmet/compare/v1.14.0...v1.14.1) (2026-05-07)
 
 
