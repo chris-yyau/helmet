@@ -2462,9 +2462,14 @@ jobs:
           else
             REASON="Production direct-dependency minor bump (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
           fi
-          gh pr comment "$PR_URL" --body \
-            "${MARKER}
-${REASON}. Auto-merge skipped — please review changes manually before merging."
+          # Build the body via printf so the run: | block contains no literal
+          # newlines mid-string. Earlier `--body "${MARKER}\n${REASON}…"` form
+          # broke Dependabot's stricter YAML parser (the second line was
+          # column-1, terminating the block scalar — Dependabot's update
+          # engine reported "/.github/workflows/dependabot-auto-merge.yml not
+          # parseable" even though GitHub Actions accepted it).
+          BODY=$(printf '%s\n\n%s\n' "$MARKER" "$REASON. Auto-merge skipped — please review changes manually before merging.")
+          gh pr comment "$PR_URL" --body "$BODY"
 ```
 
 **Key points:**
