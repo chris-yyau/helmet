@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/chris-yyau/helmet/compare/v1.14.0...v1.14.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **security:** canonical pattern hardening — pipefail, fail-closed if:, comment ([#26](https://github.com/chris-yyau/helmet/issues/26)) ([f5fb377](https://github.com/chris-yyau/helmet/commit/f5fb377099109dc7a19811eba3a5de47792d98ac))
+
 # [1.14.0](https://github.com/chris-yyau/helmet/compare/v1.13.1...v1.14.0) (2026-05-06)
 
 
