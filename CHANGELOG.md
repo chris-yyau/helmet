@@ -1,3 +1,10 @@
+## [1.14.3](https://github.com/chris-yyau/helmet/compare/v1.14.2...v1.14.3) (2026-05-07)
+
+
+### Bug Fixes
+
+* **security:** also close grep-in-if residual fail-open ([#28](https://github.com/chris-yyau/helmet/issues/28)) ([bcbc6e4](https://github.com/chris-yyau/helmet/commit/bcbc6e4c52c050c8accc28b392830b39121dca6f)), closes [#27](https://github.com/chris-yyau/helmet/issues/27) [chris-yyau/busdriver#74](https://github.com/chris-yyau/busdriver/issues/74) [Dive-And-Dev/growth-engine#49](https://github.com/Dive-And-Dev/growth-engine/issues/49)
+
 ## [1.14.2](https://github.com/chris-yyau/helmet/compare/v1.14.1...v1.14.2) (2026-05-07)
 
 
