@@ -2503,7 +2503,7 @@ CI backstop for security checks that seatbelt (or local hooks) runs at commit ti
 
 **Workflow** (`.github/workflows/security.yml`) — uses B2. Workflow Hardening patterns (concurrency, permissions, defaults, timeouts). Path filtering is split: push trigger uses `paths:` directly; PR trigger has no workflow-level path filter — instead a `changes` detection job does job-level gating (see below).
 
-**Required-check-compatible pattern:** If `Actions security` (zizmor) or any other scanner job from security.yml is set as a GitHub required status check, the workflow CANNOT use workflow-level `paths:` filter on the PR trigger — when path filters don't match, the workflow never starts and the required check is reported as absent, blocking merge. Instead, the workflow always starts on PRs, and a `changes` job detects security-relevant files. Scanner jobs use `if: needs.changes.outputs.security == 'true'` to skip when not needed. **GitHub treats skipped jobs as passing for required checks.** Push trigger retains path filters (no waste on docs-only main-branch pushes).
+**Required-check-compatible pattern:** If `Actions security` (zizmor) or any other scanner job from security.yml is set as a GitHub required status check, the workflow CANNOT use workflow-level `paths:` filter on the PR trigger — when path filters don't match, the workflow never starts and the required check is reported as absent, blocking merge. Instead, the workflow always starts on PRs, and a `changes` job detects security-relevant files. Scanner jobs use `if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')` — running when security-relevant files changed OR when the `changes` job itself failed/cancelled (fail-closed: a broken detector cannot silently bypass required security checks). **GitHub treats skipped jobs as passing for required checks**, so the gate cleanly skips on irrelevant PRs. Push trigger retains path filters (no waste on docs-only main-branch pushes).
 
 ```yaml
 name: Security
@@ -2568,7 +2568,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          set -e
+          set -eo pipefail
           if [ "$EVENT_NAME" = "push" ]; then
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -2581,7 +2581,8 @@ jobs:
             exit 0
           fi
           # Pipe directly to grep to avoid word-splitting on filenames with spaces.
-          # Pattern must align with the on: push: paths: globs above.
+          # Pattern is a superset of on: push: paths: globs above — PR scanning is intentionally
+          # broader (pyproject.toml, uv.lock, Cargo.lock, Package.resolved added) for safety.
           if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved'; then
             echo "security=true" >> "$GITHUB_OUTPUT"
           else
@@ -2591,7 +2592,7 @@ jobs:
   trivy:
     name: Dependency CVEs
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2626,7 +2627,7 @@ jobs:
   semgrep:
     name: Code security
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2647,7 +2648,7 @@ jobs:
   checkov:
     name: IaC misconfig
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -2668,7 +2669,7 @@ jobs:
   zizmor:
     name: Actions security
     needs: [changes]
-    if: needs.changes.outputs.security == 'true'
+    if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
