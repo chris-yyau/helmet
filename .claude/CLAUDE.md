@@ -38,7 +38,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypass of required checks → creates `admin-bypass` issue |
-| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | Auto-approve + `gh pr merge --auto --squash` for patch/minor bumps; comment + leave open for major |
+| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | `gh pr merge --auto --squash` for: patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment and stay open for manual review. Does not auto-approve (relies on `required_pull_request_reviews: null`) |
 
 ## Conventions
 
