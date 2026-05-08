@@ -1481,13 +1481,16 @@ gh api "repos/$OWNER/$REPO/actions/permissions" -X PUT \
 # branch protection's required_pull_request_reviews. If this returns 409
 # Conflict an enterprise admin has disabled GitHub Actions PR approval at the
 # enterprise level — that's fine, the workflow falls back to annotate-only
-# mode automatically (the next block sets the per-repo opt-in var
-# conditionally on this PUT's exit code).
+# mode (the script handles this branch explicitly below; other failure modes
+# like auth/network/typo errors abort the script instead of silently falling
+# through).
 #
 # Value comparison in the workflow's `if:` is case-sensitive — the var must
 # be the exact string `true` to enable approve+auto-merge.
+PUT_STDERR=$(mktemp)
+trap 'rm -f "$PUT_STDERR"' EXIT
 if gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
-     --input - <<'EOF' >/dev/null 2>&1
+     --input - >/dev/null 2>"$PUT_STDERR" <<'EOF'
 {
   "default_workflow_permissions": "read",
   "can_approve_pull_request_reviews": true
@@ -1497,10 +1500,19 @@ then
   # PUT succeeded → repo CAN have GitHub Actions approve PRs → opt in.
   gh variable set DEPENDABOT_AUTO_APPROVE --body "true" --repo "$OWNER/$REPO"
   echo "Dependabot auto-merge: OPTED IN (full hmarr + auto-merge workflow)"
-else
-  # PUT failed (likely 409 Conflict from enterprise-level block) → leave
-  # var unset → workflow runs in annotate-only mode.
+elif grep -qE "409|Conflict|not allow|not permit|disabled" "$PUT_STDERR"; then
+  # PUT explicitly rejected by org/enterprise policy → annotate-only mode.
+  # ALSO unset any pre-existing DEPENDABOT_AUTO_APPROVE so re-running the
+  # setup on a previously-opted-in repo correctly downgrades to annotate-only
+  # if the policy changed (idempotent re-run).
+  gh variable delete DEPENDABOT_AUTO_APPROVE --repo "$OWNER/$REPO" 2>/dev/null || true
   echo "Dependabot auto-merge: ANNOTATE-ONLY (enterprise blocks GitHub Actions PR approval; safe bumps merged manually)"
+else
+  # Any OTHER failure (auth, network, typo'd OWNER/REPO, unknown server error)
+  # is a real error — surface it instead of silently treating as annotate-only.
+  echo "ERROR: gh api PUT actions/permissions/workflow failed for unexpected reason:" >&2
+  cat "$PUT_STDERR" >&2
+  exit 1
 fi
 
 # Allowlist: github-owned always + specific third-party patterns
@@ -2336,16 +2348,21 @@ name: Dependabot Auto-Merge
 # Approves AND enqueues auto-merge on Dependabot PRs based on update-type,
 # dependency-type, and package-ecosystem — but ONLY on repos where
 # `vars.DEPENDABOT_AUTO_APPROVE == 'true'`. On other repos the workflow
-# becomes annotate-only: it posts the manual-review comment for unsafe bumps
-# (major / production-direct minor) but does not approve or auto-merge.
+# becomes annotate-only: it posts a comment for safe bumps explaining the
+# repo is opted out of auto-merge (manual merge needed) AND posts the
+# manual-review comment for unsafe bumps. Approve + auto-merge steps
+# skip cleanly on opted-out repos — no failed step, no red X.
 #
 # Auto-approve + auto-merge enqueued (var=true, safe bucket):
 #   - patch (any ecosystem, any dependency-type)
 #   - minor (dev dependencies, indirect/transitive, OR github_actions ecosystem)
 #
-# Comment + manual review (any tier, unsafe bucket):
-#   - major (any)
-#   - production direct-dependency minor (non-github_actions ecosystem)
+# Comment + manual flow (always — fires on every Dependabot PR that doesn't
+# fall into the auto-approve+merge bucket above):
+#   - safe bump on opted-out repo: "manual merge needed" annotation
+#   - major (any): "manual review required"
+#   - production direct-dependency minor (non-github_actions ecosystem): "manual review required"
+#   - unknown / unrecognized update-type: "inspect bump type" annotation
 #
 # Why a per-repo variable: GitHub's two ways to satisfy
 # `required_approving_review_count` from a workflow are tier-asymmetric:
@@ -2572,9 +2589,12 @@ jobs:
           elif [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
             REASON="Major version bump detected (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
             CTA="Auto-merge skipped — please review changes manually before merging."
-          else
+          elif [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
             REASON="Production direct-dependency minor bump (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
             CTA="Auto-merge skipped — please review changes manually before merging."
+          else
+            REASON="Unsafe Dependabot bump — update-type='${UPDATE_TYPE}' dependency-type='${DEPENDENCY_TYPE}' (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
+            CTA="Auto-merge skipped — please inspect the bump type and merge manually if appropriate."
           fi
           BODY=$(printf '%s\n\n%s. %s\n' "$MARKER" "$REASON" "$CTA")
           gh pr comment "$PR_URL" --body "$BODY"

@@ -3,16 +3,21 @@ name: Dependabot Auto-Merge
 # Approves AND enqueues auto-merge on Dependabot PRs based on update-type,
 # dependency-type, and package-ecosystem — but ONLY on repos where
 # `vars.DEPENDABOT_AUTO_APPROVE == 'true'`. On other repos the workflow
-# becomes annotate-only: it posts the manual-review comment for unsafe bumps
-# (major / production-direct minor) but does not approve or auto-merge.
+# becomes annotate-only: it posts a comment for safe bumps explaining the
+# repo is opted out of auto-merge (manual merge needed) AND posts the
+# manual-review comment for unsafe bumps. Approve + auto-merge steps
+# skip cleanly on opted-out repos — no failed step, no red X.
 #
 # Auto-approve + auto-merge enqueued (var=true, safe bucket):
 #   - patch (any ecosystem, any dependency-type)
 #   - minor (dev dependencies, indirect/transitive, OR github_actions ecosystem)
 #
-# Comment + manual review (any tier, unsafe bucket):
-#   - major (any)
-#   - production direct-dependency minor (non-github_actions ecosystem)
+# Comment + manual flow (always — fires on every Dependabot PR that doesn't
+# fall into the auto-approve+merge bucket above):
+#   - safe bump on opted-out repo: "manual merge needed" annotation
+#   - major (any): "manual review required"
+#   - production direct-dependency minor (non-github_actions ecosystem): "manual review required"
+#   - unknown / unrecognized update-type: "inspect bump type" annotation
 #
 # Why a per-repo variable: GitHub's two ways to satisfy
 # `required_approving_review_count` from a workflow are tier-asymmetric:
@@ -239,9 +244,12 @@ jobs:
           elif [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
             REASON="Major version bump detected (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
             CTA="Auto-merge skipped — please review changes manually before merging."
-          else
+          elif [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; then
             REASON="Production direct-dependency minor bump (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
             CTA="Auto-merge skipped — please review changes manually before merging."
+          else
+            REASON="Unsafe Dependabot bump — update-type='${UPDATE_TYPE}' dependency-type='${DEPENDENCY_TYPE}' (${PACKAGE_ECOSYSTEM} / ${DEPENDENCY_NAMES})"
+            CTA="Auto-merge skipped — please inspect the bump type and merge manually if appropriate."
           fi
           BODY=$(printf '%s\n\n%s. %s\n' "$MARKER" "$REASON" "$CTA")
           gh pr comment "$PR_URL" --body "$BODY"
