@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/chris-yyau/helmet/compare/v1.15.2...v1.16.0) (2026-05-08)
+
+
+### Features
+
+* **helmet:** tier-portable Dependabot auto-merge via in-workflow auto-approve ([#33](https://github.com/chris-yyau/helmet/issues/33)) ([5b471e2](https://github.com/chris-yyau/helmet/commit/5b471e2ebad4f849ff787a032a7eba2c0361ddda)), closes [hi#confidence](https://github.com/hi/issues/confidence)
+
 ## [1.15.2](https://github.com/chris-yyau/helmet/compare/v1.15.1...v1.15.2) (2026-05-08)
 
 
