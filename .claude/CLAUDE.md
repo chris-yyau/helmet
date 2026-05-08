@@ -38,7 +38,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypass of required checks → creates `admin-bypass` issue |
-| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | Approves AND `gh pr merge --auto --squash` for: patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment and stay open for manual review. Tier-portable via dual mechanism — at least ONE of (a) `can_approve_pull_request_reviews: true` (Free/Pro/Team + most Enterprise) OR (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection (Enterprise-only, fallback when enterprise policy blocks (a)) must be in place. Merge step uses `!cancelled() && (...)` so (b)-only repos still merge when approve step errors |
+| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | On opt-in repos (`vars.DEPENDABOT_AUTO_APPROVE="true"` + `can_approve_pull_request_reviews:true` on workflow permissions): approves AND `gh pr merge --auto --squash` for patch (any) + safe minor (dev/indirect/github_actions). On opt-out repos (default, including enterprise orgs that disable GitHub Actions PR approval): annotate-only — comment fires for both safe-and-manual and unsafe (major / production-direct minor) bumps; safe bumps are merged by hand. Helmet repo itself is opted in |
 
 ## Conventions
 
