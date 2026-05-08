@@ -69,10 +69,26 @@ if [[ -z "$OWNER" || -z "$REPO" ]]; then
     LOCAL_ONLY=1
   else
     # Parse github.com:OWNER/REPO(.git)? or https://github.com/OWNER/REPO(.git)?
-    parsed=$(echo "$remote_url" | sed -E 's#^.*[:/]([^/]+)/([^/]+)(\.git)?$#\1 \2#' | sed 's/\.git$//')
+    # Normalize trailing slash + .git first so the regex doesn't have to handle
+    # them as alternatives (and so the simpler regex catches both
+    # `…/repo`, `…/repo/`, and `…/repo.git`).
+    normalized="${remote_url%/}"           # strip one trailing slash if any
+    normalized="${normalized%.git}"        # strip .git if any
+    parsed=$(echo "$normalized" | sed -E 's#^.*[:/]([^/]+)/([^/]+)$#\1 \2#')
     OWNER="${OWNER:-$(echo "$parsed" | awk '{print $1}')}"
     REPO="${REPO:-$(echo "$parsed" | awk '{print $2}')}"
-    REPO="${REPO%.git}"
+
+    # Validate parsed values. GitHub owner/repo names are restricted to
+    # `[A-Za-z0-9._-]+`; anything else means the regex matched something it
+    # shouldn't have (e.g., a non-github remote, a malformed URL, or a path
+    # traversal attempt like `owner/../foo`). Fail-fast rather than feed
+    # garbage into `gh api` URLs and get confusing 404s.
+    if [[ ! "$OWNER" =~ ^[A-Za-z0-9._-]+$ || ! "$REPO" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "error: could not parse OWNER/REPO from remote '$remote_url'" >&2
+      echo "       parsed: OWNER='$OWNER' REPO='$REPO'" >&2
+      echo "       hint: pass --owner X --repo Y, or --local-only to skip API checks" >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -169,16 +185,40 @@ echo "[b] Checking lock against $OWNER/$REPO branch protection…"
 # Default branch lookup (most repos use 'main' but be explicit)
 default_branch=$(gh api "repos/$OWNER/$REPO" --jq '.default_branch' 2>/dev/null || echo "main")
 
-# Force C locale so shell `sort` matches jq's codepoint ordering. Without
-# this, en_US.UTF-8 dictionary order interleaves cases ("commitlint" sorts
-# before "Dependency CVEs"), while jq sort is strict codepoint ("D" < "c"),
-# producing a phantom diff where every item appears on both sides.
-server_contexts=$(gh api "repos/$OWNER/$REPO/branches/$default_branch/protection/required_status_checks" \
-  --jq '.contexts[]' 2>/dev/null | LC_ALL=C sort || true)
-if [[ -z "$server_contexts" ]]; then
-  echo "  warn: could not read required_status_checks (no branch protection? insufficient scope?)"
+# Distinguish three cases that the original `--jq '.contexts[]'` form
+# silently merged:
+#   (i)   gh api errored / branch unprotected / 404                   → warn-skip
+#   (ii)  gh api succeeded with `contexts: []`  (real-empty)          → drift if lock has entries
+#   (iii) gh api succeeded with `contexts: ["a",…]`                   → set-compare
+#
+# Use `gh api` exit code (not response shape) to detect (i). Use `jq -e` to
+# detect (ii) vs (iii) without conflating null/missing with empty array.
+api_path="repos/$OWNER/$REPO/branches/$default_branch/protection/required_status_checks"
+if server_response=$(gh api "$api_path" 2>/dev/null); then
+  api_ok=1
 else
+  api_ok=0
+fi
+
+if [[ "$api_ok" -eq 0 ]]; then
+  echo "  warn: could not read required_status_checks (no branch protection? insufficient scope?)"
+elif ! contexts_count=$(printf '%s' "$server_response" \
+       | jq -er 'if (has("contexts") and (.contexts | type == "array")) then .contexts | length else error("missing-contexts") end' 2>/dev/null); then
+  # API returned 200 but the response shape is unexpected: either `.contexts`
+  # is absent, or it's not an array. Treat as a warn-skip rather than silent
+  # pass — the API contract changed, we're targeting the wrong endpoint, or
+  # auth scope is insufficient and we got a stub response. The bare jq form
+  # `.contexts | length` would have returned 0 for missing fields (since
+  # `null | length` is 0), conflating "missing" with "real-empty".
+  echo "  warn: required_status_checks response missing .contexts field — unexpected API shape"
+else
+  # Force C locale so shell `sort` matches jq's codepoint ordering. Without
+  # this, en_US.UTF-8 dictionary order interleaves cases ("commitlint" sorts
+  # before "Dependency CVEs"), while jq sort is strict codepoint ("D" < "c"),
+  # producing a phantom diff where every item appears on both sides.
+  server_contexts=$(printf '%s' "$server_response" | jq -r '.contexts[]?' | LC_ALL=C sort)
   lock_contexts=$(jq -r '.required[].name' "$LOCK" | LC_ALL=C sort)
+  lock_count=$(jq -r '.required | length' "$LOCK")
 
   missing_on_server=$(comm -23 <(echo "$lock_contexts") <(echo "$server_contexts") || true)
   extra_on_server=$(comm -13 <(echo "$lock_contexts") <(echo "$server_contexts") || true)
@@ -194,7 +234,11 @@ else
     drift=1
   fi
   if [[ -z "$missing_on_server" && -z "$extra_on_server" ]]; then
-    echo "  ok: lock.required matches server contexts (both contain $(echo "$lock_contexts" | wc -l | tr -d ' ') items)"
+    if [[ "$contexts_count" -eq 0 && "$lock_count" -eq 0 ]]; then
+      echo "  ok: both lock and server are empty (no required checks declared anywhere)"
+    else
+      echo "  ok: lock.required matches server contexts (both contain $contexts_count items)"
+    fi
   fi
 fi
 

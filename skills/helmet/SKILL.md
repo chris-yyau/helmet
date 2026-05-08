@@ -1369,6 +1369,8 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
+| Required-checks lock | `[ -f .github/required-checks.lock ]` | File exists (canonical name + source-app registry — see B1c) |
+| Required-checks drift detector | `[ -f scripts/check-required-checks.sh ] && [ -x scripts/check-required-checks.sh ]` | Script exists and is executable |
 | Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
@@ -1395,6 +1397,9 @@ For each `.github/workflows/*.yml`, verify:
 | SHA-pinned actions | `bash .github/scripts/check-pinned-uses.sh` — exit 0 = pass |
 | No `paths` + `paths-ignore` on same trigger | Verify no workflow uses both `paths` and `paths-ignore` on the same trigger event (GitHub ignores `paths-ignore` when `paths` is present) |
 | `persist-credentials: false` | Check all checkout steps except release/pinact (which need push access) |
+| Cache policy on setup-* | For each `setup-node` step verify a `cache:` input is set (`npm`/`pnpm`/`yarn`); for each `setup-python` verify `cache: pip` (or `poetry`/`pipenv`); for each `setup-go` verify `cache: true`. Quick lint: `grep -E 'setup-(node\|python\|go)' .github/workflows/*.yml -A 5 \| grep -B 1 'cache:'` shows hits. See B3.0 for the full canonical table |
+| Cache anti-pattern | Flag any `actions/cache` block whose `path:` includes `node_modules`, `.venv`, `vendor/`, or a bare `target/` — caching install dirs is almost always wrong (cache PM stores instead). Quick lint: `grep -A 5 'actions/cache@' .github/workflows/*.yml \| grep -E 'node_modules\|\.venv\|vendor/\|^[[:space:]]+- target/$'` should return nothing |
+| Artifact retention bounded | For each `upload-artifact` step, verify a `retention-days:` value within ~5 lines and ≤ 30. Stricter caps per class: scorecard ≤ 14, coverage ≤ 7, security ≤ 14, release-only on releases. Quick lint: `grep -nB 0 -A 5 'upload-artifact' .github/workflows/*.yml \| grep -E 'retention-days:'` and inspect each value |
 
 ### Content Checks (grep inside files)
 | Check | Command | Pass condition |
@@ -3161,7 +3166,7 @@ Especially valuable for AI-written workflows — LLMs default to version tags (`
 
 **Audit rules** (added to B0. Audit Checks):
 - `grep -rE 'upload-artifact' .github/workflows/` — for each match, verify a `retention-days:` value within ~5 lines (BSD/GNU grep `-A 5`). Flag missing values and any value > 30 (force a justification).
-- Specifically: `scorecard.yml` `retention-days` ≤ 14, coverage upload steps ≤ 7, security uploads ≤ 14. Helmet's own `scorecard.yml` may still read 30 — bump to 14 in the next deploy pass.
+- Specifically: `scorecard.yml` `retention-days` ≤ 14, coverage upload steps ≤ 7, security uploads ≤ 14. Helmet's own `scorecard.yml` was bumped from 30 → 14 in this PR; cascading to fleet repos happens at the next per-repo helmet run.
 
 **Relationship with local scanning:**
 | Scanner | Local (seatbelt/hooks) | CI (security.yml) | CI (compliance job) |
