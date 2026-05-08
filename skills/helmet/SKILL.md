@@ -1323,7 +1323,7 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **OpenSSF Scorecard** | Security health score (18 checks, weekly cron + push) | `.github/workflows/scorecard.yml` |
 | **SECURITY.md** | Vulnerability disclosure policy | `SECURITY.md` at repo root |
 | **Dependabot** | Security alerts + automated version update PRs (GitHub-native) | `.github/dependabot.yml` |
-| **Dependabot auto-merge** | Enqueues auto-merge for patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment for manual review. Does not auto-approve | `.github/workflows/dependabot-auto-merge.yml` |
+| **Dependabot auto-merge** | Approves AND enqueues auto-merge for patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment for manual review. Tier-portable (works on Free/Pro/Team/Enterprise) | `.github/workflows/dependabot-auto-merge.yml` |
 | **Commit Signing (SSH)** | Verified commits with SSH key signatures | `~/.gitconfig` (global) + GitHub signing key |
 | **checkov (local)** | IaC misconfiguration scan — **BLOCK** on commit | `~/.claude/hooks/pre-commit-iac-scan.sh` |
 | **zizmor (local)** | GitHub Actions workflow security — WARN on commit | `~/.claude/hooks/pre-commit-iac-scan.sh` |
@@ -1475,6 +1475,21 @@ gh api "repos/$OWNER/$REPO" -X PATCH \
 gh api "repos/$OWNER/$REPO/actions/permissions" -X PUT \
   -f allowed_actions=selected -F enabled=true -F sha_pinning_required=true
 
+# Workflow permissions: enable "Allow GitHub Actions to create and approve PRs"
+# (default is false). Required for `dependabot-auto-merge.yml`'s
+# `hmarr/auto-approve-action` step to post the approving review that satisfies
+# branch protection's required_pull_request_reviews. Some Enterprise admins
+# disable this at enterprise level — the API returns 409 Conflict in that case
+# and the repo must rely on `bypass_pull_request_allowances` instead (see
+# Branch protection notes below).
+gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
+  --input - <<'EOF'
+{
+  "default_workflow_permissions": "read",
+  "can_approve_pull_request_reviews": true
+}
+EOF
+
 # Allowlist: github-owned always + specific third-party patterns
 gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
   --input - <<'EOF'
@@ -1486,7 +1501,8 @@ gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
     "ossf/scorecard-action@*",
     "suzuki-shunsuke/pinact-action@*",
     "aquasecurity/trivy-action@*",
-    "dependabot/fetch-metadata@*"
+    "dependabot/fetch-metadata@*",
+    "hmarr/auto-approve-action@*"
   ]
 }
 EOF
@@ -1553,7 +1569,10 @@ Add patterns for any additional third-party actions the repo uses (e.g., `anchor
 - **Job name resolution:** GitHub uses the `name:` field if present, otherwise the YAML job key. Example: a job key `zizmor` with `name: Actions security` appears as "Actions security" in status checks. Always verify with `gh api "repos/$OWNER/$REPO/commits/<sha>/check-runs" --jq '.check_runs[].name' | sort -u`
 - **Required check prerequisite:** each check must have at least one recorded run on the repository for GitHub to accept it as a required check. Run workflows at least once before setting protection
 - `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). Set `true` for team repos
-- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. **Also load-bearing for `dependabot-auto-merge.yml`**: that workflow does not auto-approve, so `gh pr merge --auto` only fires when the branch protection has no PR-review requirement (or Dependabot has bypass). Enabling required reviews without a Dependabot bypass leaves Dependabot PRs queued forever
+- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. For repos that DO require reviews, `dependabot-auto-merge.yml` is designed to satisfy the gate via two complementary mechanisms (at least one must be in place):
+  - **(a) `can_approve_pull_request_reviews: true`** on the repo's workflow permissions (set above) — lets the workflow's `hmarr/auto-approve-action` step post the approving review. Available on Free/Pro/Team/Enterprise UNLESS the enterprise admin globally disables it; check `gh api orgs/ORG/actions/permissions/workflow --jq .can_approve_pull_request_reviews` first.
+  - **(b) `bypass_pull_request_allowances: { apps: ["dependabot"] }`** on branch protection — lets Dependabot's PRs bypass the review requirement entirely. Enterprise plans only on classic branch protection rules. Useful when (a) is blocked at the enterprise level. PATCH command: `echo '{"bypass_pull_request_allowances":{"users":[],"teams":[],"apps":["dependabot"]}}' | gh api -X PATCH "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_pull_request_reviews" --input -`
+  - Repos with NEITHER will see Dependabot PRs queue indefinitely (visible fail-stuck, not silent fail-merge — by design)
 - Without branch protection, `allow_auto_merge` merges immediately with no checks — always pair them
 - **Renaming a job's `name:` field silently breaks required check enforcement** — the old name stays in branch protection but no longer matches any check, causing PRs to hang. Always update branch protection when renaming job display names
 
@@ -2258,7 +2277,7 @@ Dependabot provides three layers, all now deployed:
 
 1. **Security alerts** — flags vulnerable dependencies in the Security tab (GitHub-native, always on)
 2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed across all helmet-onboarded repos)
-3. **Auto-merge for safe bumps** — `.github/workflows/dependabot-auto-merge.yml` enqueues auto-merge (no auto-approve) for: patch bumps in any ecosystem, plus minor bumps that are dev dependencies, indirect dependencies, or github_actions. Major bumps and production-direct minor bumps get a comment and stay open for manual review
+3. **Auto-merge for safe bumps** — `.github/workflows/dependabot-auto-merge.yml` approves AND enqueues auto-merge for: patch bumps in any ecosystem, plus minor bumps that are dev dependencies, indirect dependencies, or github_actions. Major bumps and production-direct minor bumps get a comment and stay open for manual review. Tier-portable via dual mechanism — at least ONE of (a) `can_approve_pull_request_reviews: true` (in-workflow approve, available on Free/Pro/Team and most Enterprise) OR (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection (Enterprise-only, used when (a) is enterprise-policy-blocked) must be set per repo. Merge step uses `!cancelled() && (...)` so the enqueue still fires on (b)-only repos when the approve step errors
 
 **Deployed config** (`.github/dependabot.yml`):
 
@@ -2303,34 +2322,60 @@ updates:
 ```yaml
 name: Dependabot Auto-Merge
 
-# Enqueues auto-merge on Dependabot PRs based on update-type, dependency-type,
-# and package-ecosystem. Does NOT auto-approve — the workflow only calls
-# `gh pr merge --auto --squash`.
+# Approves AND enqueues auto-merge on Dependabot PRs based on update-type,
+# dependency-type, and package-ecosystem.
 #
-# Auto-merge enqueued:
+# Auto-approve + auto-merge enqueued (same gating, same `if:`):
 #   - patch (any ecosystem, any dependency-type)
 #   - minor (dev dependencies, indirect/transitive, OR github_actions ecosystem)
 #
-# Comment + manual review (no auto-merge):
+# Comment + manual review (no auto-approve, no auto-merge):
 #   - major (any)
 #   - production direct-dependency minor (non-github_actions ecosystem)
 #
-# Auto-approve is intentionally absent. Required-PR-reviews must therefore be
-# disabled (or Dependabot must have bypass) for auto-merge to actually fire —
-# `gh pr merge --auto` queues, but GitHub waits for all branch-protection
-# requirements before merging. With `can_approve_pull_request_reviews: false`
-# (GitHub's safer default), this workflow does not need to be granted that
-# permission.
+# Auto-approval is necessary because branch protection's
+# `required_approving_review_count: 1` is the most common helmet default; the
+# `gh pr merge --auto` step only enqueues, and GitHub waits for ALL branch
+# protection requirements (including reviews) before merging. The
+# `hmarr/auto-approve-action` step posts a review as `github-actions[bot]`,
+# satisfies the review requirement, and the merge fires when remaining checks
+# pass. Major + production-direct minor PRs intentionally are NOT approved —
+# they sit waiting for human review (the comment step explains why).
+#
+# Tier portability: this pattern is designed to work on GitHub Free, Pro,
+# Team, and Enterprise via two complementary mechanisms — at least ONE must be
+# in place per repo:
+#
+#   (a) `can_approve_pull_request_reviews: true` on the repo's workflow
+#       permissions (Settings → Actions → General → Workflow permissions →
+#       "Allow GitHub Actions to create and approve pull requests"). Defaults
+#       to false. Some Enterprise admins disable this at the enterprise level,
+#       which propagates down to orgs/repos and cannot be overridden lower.
+#       When (a) is allowed, the `hmarr/auto-approve-action` step posts the
+#       review and the merge step fires.
+#
+#   (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch
+#       protection (Enterprise plans only on classic branch protection rules).
+#       Lets Dependabot's PRs skip the review requirement entirely.
+#
+# The merge + comment steps use `!cancelled() &&` in their `if:` so that the
+# merge enqueue still fires on repos where (a) is blocked but (b) is set —
+# the approve step shows a visible failure (intentional, not silent) and the
+# merge fires via bypass. On repos with neither (a) nor (b), Dependabot PRs
+# queue indefinitely (visible fail-stuck rather than silent fail-merge).
 #
 # Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
-# - Branch protection without required PR reviews (or Dependabot has bypass)
+# - At least ONE of (a) or (b) above
+# - `hmarr/auto-approve-action@*` in the org/repo Actions allowlist
+# - `dependabot/fetch-metadata@*` in the org/repo Actions allowlist
 #
 # Token note: Dependabot-triggered workflow runs receive a read-only
 # GITHUB_TOKEN by default. The explicit `permissions:` block below restores
-# write scope. `gh pr merge --auto` only enqueues — actual merge waits for
-# branch-protection checks, so no PAT is needed.
+# write scope (including `pull-requests: write` for the approve step).
+# `gh pr merge --auto` only enqueues — actual merge waits for branch-protection
+# checks, so no PAT is needed.
 
 on:
   pull_request:
@@ -2366,13 +2411,37 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df # v2.18.0
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
         with:
           egress-policy: audit
 
       - name: Fetch Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve PR — patch + safe minor
+        # Posts an approving review as github-actions[bot], satisfying branch
+        # protection's required_approving_review_count so `gh pr merge --auto`
+        # below can fire. Same `if:` as the merge step (modulo !cancelled()) —
+        # we approve EXACTLY the bumps we'd auto-merge. Major + production-
+        # direct minor PRs fall through unapproved and route to the comment
+        # step instead.
+        #
+        # Failure mode: if `can_approve_pull_request_reviews: false` (default
+        # for new repos, or pinned by Enterprise policy), this step errors
+        # out. That's intentional — the next step uses `!cancelled()` so the
+        # merge enqueue still runs; on repos with Dependabot bypass on
+        # branch protection, the merge fires anyway. On repos with neither,
+        # the PR queues until a human approves.
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+           (steps.metadata.outputs.dependency-type == 'direct:development' ||
+            steps.metadata.outputs.dependency-type == 'indirect' ||
+            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+        uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -2384,12 +2453,16 @@ jobs:
         # Production direct-dependency minor bumps are intentionally NOT
         # auto-merged — they're the highest-risk minor category and warrant
         # a human read of the changelog.
+        # `!cancelled()` so the enqueue runs even if the approve step failed
+        # (covers Enterprise-restricted repos that rely on Dependabot bypass
+        # instead of in-workflow approve — see workflow header).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           (steps.metadata.outputs.dependency-type == 'direct:development' ||
-            steps.metadata.outputs.dependency-type == 'indirect' ||
-            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             (steps.metadata.outputs.dependency-type == 'direct:development' ||
+              steps.metadata.outputs.dependency-type == 'indirect' ||
+              steps.metadata.outputs.package-ecosystem == 'github_actions')))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -2416,11 +2489,17 @@ jobs:
         # Triggers when this PR is NOT in the safe auto-merge bucket above:
         #   - any major bump
         #   - minor + direct:production + non-github_actions
+        # `!cancelled()` for symmetry with the merge step — comment fires
+        # even if the approve step failed (which it shouldn't for these
+        # update types since the approve `if:` excludes them, but keep the
+        # gate explicit so the failure mode is the same shape on both
+        # branches).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-major' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           steps.metadata.outputs.dependency-type == 'direct:production' &&
-           steps.metadata.outputs.package-ecosystem != 'github_actions')
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-major' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             steps.metadata.outputs.dependency-type == 'direct:production' &&
+             steps.metadata.outputs.package-ecosystem != 'github_actions'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -2485,15 +2564,16 @@ jobs:
 **Key points:**
 - **`if: github.event.pull_request.user.login == 'dependabot[bot]'`** — workflow runs on every PR but the only job is gated; non-Dependabot PRs see the job as skipped (counts as passing for branch protection). `pull_request.user.login` is read from the immutable PR object; `github.actor` is spoofable (zizmor `bot-conditions` audit), so prefer the former
 - **`fetch-metadata` reports the highest update-type** across grouped updates — if any single dep in a grouped PR is a major bump, the whole PR routes to the major branch
-- **No auto-approve** — `gh pr review --approve` is intentionally absent. Auto-merge enqueues directly via `gh pr merge --auto --squash`. Required-PR-reviews must therefore be off (or Dependabot must have bypass) for the merge to fire. Keeps `can_approve_pull_request_reviews: false` as the safer default — workflows aren't reviewers
-- **Tiered gating**: patch/minor/major × dependency-type/ecosystem matrix. Patches always auto-merge; minors only auto-merge for dev deps, indirect deps, or github_actions ecosystem; majors and production-direct minors get a comment and stay open. The production-direct minor case is the highest-risk minor category and warrants a human read of the changelog
-- **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after all required status checks pass AND no PR-review requirement is configured. Helmet's branch protection sets `required_pull_request_reviews: null` (B1b), so checks-only is the gate — but a downstream repo that re-enables required reviews without a Dependabot bypass will leave PRs queued forever (intentional fail-stuck rather than fail-merge)
+- **Auto-approve via `hmarr/auto-approve-action`** — posts an approving review as `github-actions[bot]` for the same PRs the merge step would enqueue. Same `if:` condition keeps approve-and-merge in lockstep — major + production-direct minor PRs are intentionally NOT approved (they fall through to the comment step). The action runs as `GITHUB_TOKEN` (no PAT, no long-lived secret); SHA-pinned for supply-chain safety. Requires `can_approve_pull_request_reviews: true` on the repo's workflow permissions (B1b). On repos where that's pinned to `false` by enterprise policy, the approve step errors visibly — the merge + comment steps use `!cancelled() && (gating)` so the merge enqueue still fires; on those repos, `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection takes over (Enterprise plans only on classic branch protection rules). Tier-portable via the dual mechanism — at least ONE of the two must be in place per repo
+- **Tiered gating**: patch/minor/major × dependency-type/ecosystem matrix. Patches always auto-approve+merge; minors only auto-approve+merge for dev deps, indirect deps, or github_actions ecosystem; majors and production-direct minors get a comment and stay open. The production-direct minor case is the highest-risk minor category and warrants a human read of the changelog
+- **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after all required status checks pass AND review requirements are met. The auto-approve step satisfies `required_approving_review_count` so the merge can fire even on repos that require reviews on human PRs — review gate stays on for the rest of the codebase, Dependabot's safe bumps still flow through
 - **No PAT, no `pull_request_target`** — explicit `permissions:` on a `pull_request` workflow is enough for Dependabot's restricted-token case; preserves helmet's "never `pull_request_target`" rule
 - **Idempotent under re-runs**: Dependabot rebases trigger workflow re-runs on the same PR. (1) `gh pr merge --auto --squash` pattern-matches its stderr — only the "already enabled" idempotency string is tolerated; all other failures (auth, rate limit, branch protection misconfig) abort the step so the user sees them. (2) The comment step uses a hidden HTML marker (`<!-- dependabot-auto-merge: manual-review-required -->`) for the duplicate-check, so the same marker matches both major-bump and production-minor comment variants — rebases don't re-comment. The dedup check uses the canonical fail-closed pattern (capture-then-test, explicit grep status via `case`) — same shape as `security.yml`'s `changes` detector, so a transient `gh pr view` failure surfaces as a `::warning::` instead of silently re-commenting on every rebase
 
 **SHA verification:**
-- `step-security/harden-runner@6c3c2f2c1c457b00c10c4848d6f5491db3b629df` → v2.18.0 (matches all other helmet workflows)
+- `step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450` → v2.19.1
 - `dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98` → v3.1.0
+- `hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363` → v4.0.0
 
 #### M. Commit Signing with SSH (all machines)
 
@@ -2843,7 +2923,8 @@ gh api repos/OWNER/REPO/actions/permissions/selected-actions -X PUT \
     "ossf/scorecard-action@*",
     "suzuki-shunsuke/pinact-action@*",
     "aquasecurity/trivy-action@*",
-    "dependabot/fetch-metadata@*"
+    "dependabot/fetch-metadata@*",
+    "hmarr/auto-approve-action@*"
   ]
 }
 EOF
@@ -3507,7 +3588,7 @@ done
 - **Security scanners as required checks (added 2026-05-07)** — helmet's default branch-protection policy now requires `Actions security` (zizmor), `Code security` (semgrep), `Dependency CVEs` (trivy), and `IaC misconfig` (checkov). Previously they ran on PRs as advisory. The shift addresses two real bypass risks: (1) Dependabot bumps of vulnerable npm/pip deps could merge on `test` pass alone — Trivy flagged the CVE on the PR but didn't block merge. (2) Manual click of "Enable auto-merge" on a Dependabot PR with a failing scanner would silently merge once required checks (only `test`) passed. Helmet's job-level `if:` skip pattern in `security.yml` means scanners always report a result (pass or skip-counted-as-pass) on every PR, so requiring them does not introduce false-positive blockage on PRs that don't touch security-relevant files. The retrofit (B4b) is idempotent on `/required_status_checks` (PATCH not PUT) so re-running is safe. External AI reviewers (CodeRabbit, Greptile, cubic, CodeScene) stay advisory — their availability is third-party and required-check on them would hang PRs when the service is slow
 - **Dependabot `commit-message.prefix` and `labels`** — `chore(actions)` prefix for conventional commits; `dependencies` + `github-actions` labels for filtering. Dependabot reads `@<sha> # vX.Y.Z` inline comments and updates both SHA + comment
 - **Dependabot auto-merge over AI review for patch+minor (added 2026-05-07)** — Dependabot's PR body already contains release notes + compatibility score; for patch and minor bumps, an LLM review adds little signal at non-trivial token cost. The `dependabot-auto-merge.yml` workflow uses `dependabot/fetch-metadata` to gate by `update-type` and only auto-approves+queues patch/minor. Major bumps still drop a comment and stay open for human review. Workflow uses `pull_request` (not `pull_request_target`) with explicit `permissions:` to override Dependabot's default read-only `GITHUB_TOKEN` — preserves helmet's "never `pull_request_target`" rule. `gh pr merge --auto` only enqueues; the actual merge waits for branch-protection checks, so no PAT is needed
-- **Idempotency on Dependabot re-runs (added 2026-05-07, post-Greptile fix)** — Dependabot rebases re-trigger the workflow on the same PR. Three paths need explicit idempotency guards: (1) `gh pr review --approve` exits non-zero with "already approved" when the prior approval wasn't dismissed by branch protection; (2) `gh pr merge --auto --squash` exits non-zero with "auto merge is already enabled" once auto-merge has been enabled by a prior run — same shape of bug, symmetric to (1). Both need stderr capture and substring pattern-match: tolerate the specific idempotency strings only, surface every other failure (auth, rate limit, "Actions cannot approve PRs" org setting off, branch protection misconfig). A naive `|| echo` mask would silently swallow real errors; missing the symmetric merge-enqueue guard would fail the whole step on every rebase after the first run. (3) `gh pr comment` always creates a new comment, so the major-bump path needs a grep-based check against existing `github-actions[bot]` comments to avoid duplicate notifications. The original PR (#23) shipped without any of these — pr-grind declared clean based on Greptile's check-pass status without reading the actual review body, which contained P1 findings. The lesson is process-level: **pr-grind must read AI-reviewer comment bodies, not just check-status flips**. Greptile posts as issue comments (not inline review threads), so a `reviewThreads` GraphQL filter misses everything; use `gh pr view --comments` plus `gh api repos/.../pulls/N/reviews` to get full coverage
+- **Idempotency on Dependabot re-runs (added 2026-05-07, post-Greptile fix)** — Dependabot rebases re-trigger the workflow on the same PR. Two paths in helmet-managed code need explicit idempotency guards: (1) `gh pr merge --auto --squash` exits non-zero with "auto merge is already enabled" once auto-merge has been enabled by a prior run — needs stderr capture and substring pattern-match: tolerate the specific idempotency string only, surface every other failure (auth, rate limit, branch protection misconfig). A naive `|| echo` mask would silently swallow real errors. (2) `gh pr comment` always creates a new comment, so the major-bump path needs a grep-based check against existing `github-actions[bot]` comments to avoid duplicate notifications. The approve step (`hmarr/auto-approve-action`, added 2026-05-08) handles its own idempotency natively — the action checks for an existing approving review from the same actor on the current head SHA and skips if one exists, so no in-workflow guard needed. The original PR (#23) shipped without any of these idempotency guards — pr-grind declared clean based on Greptile's check-pass status without reading the actual review body, which contained P1 findings. The lesson is process-level: **pr-grind must read AI-reviewer comment bodies, not just check-status flips**. Greptile posts as issue comments (not inline review threads), so a `reviewThreads` GraphQL filter misses everything; use `gh pr view --comments` plus `gh api repos/.../pulls/N/reviews` to get full coverage
 - **No OIDC needed yet (no CI-based deployment)** — all deployments use git-push → platform auto-deploy (Vercel/Netlify), so CI never touches deployment credentials. Existing `id-token: write` is only for Scorecard (OpenSSF API) and Cosign (keyless signing in forge). When CI-based deployment is added, switch to OIDC with trust policy locked to specific repo + environment (no wildcards). Never use static cloud credentials (AWS keys, GCP service accounts) as GitHub secrets for deployment
 - **Workflow changes are a high-risk path** — `.github/workflows/**` modifications get explicit SHA pin verification + zizmor scan in the `zizmor` job of `security.yml`. AI-generated workflows frequently use tag refs (`@v4`) instead of full SHA pins; the grep-based verify step catches this before merge. GitHub natively supports "Require actions to be pinned to a full-length commit SHA" at org/repo level — enable this in repo settings for belt-and-suspenders enforcement alongside CI. Added 2026-03-27
 - **Squash-only merges** — `allow_squash_merge: true`, merge commits and rebase disabled. Clean single-commit PRs, linear history. `allow_update_branch: true` suggests keeping PRs current. `delete_branch_on_merge: true` auto-cleans merged branches
