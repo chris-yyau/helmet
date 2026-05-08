@@ -154,15 +154,18 @@ while IFS= read -r entry; do
   actual_name=$(awk -v key="$job_key" '
     # Top-level "jobs:" header. Track depth so nested keys (env:, with:, etc.)
     # in mappings under jobs.* do not get mistaken for top-level job keys.
-    /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+    # Allow a trailing inline `# comment` on the header line — YAML permits it
+    # and an over-strict match would silently produce false drift.
+    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
     in_jobs && /^[^[:space:]]/ { in_jobs = 0 }   # left jobs block
 
-    # Job key line: exactly two-space indent, identifier, then ":". Capture
-    # the key with sub() since BSD awk lacks 3-arg match().
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+    # Job key line: exactly two-space indent, identifier, then ":", optionally
+    # followed by a trailing `# comment`. Capture the key with sub() since
+    # BSD awk lacks 3-arg match().
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
       cur = $0
       sub(/^  /, "", cur)
-      sub(/:[[:space:]]*$/, "", cur)
+      sub(/:[[:space:]]*(#.*)?$/, "", cur)
       seen[cur] = 1
       jname[cur] = ""           # default: no explicit name
       next

@@ -1397,9 +1397,22 @@ For each `.github/workflows/*.yml`, verify:
 | SHA-pinned actions | `bash .github/scripts/check-pinned-uses.sh` — exit 0 = pass |
 | No `paths` + `paths-ignore` on same trigger | Verify no workflow uses both `paths` and `paths-ignore` on the same trigger event (GitHub ignores `paths-ignore` when `paths` is present) |
 | `persist-credentials: false` | Check all checkout steps except release/pinact (which need push access) |
-| Cache policy on setup-* | For each `setup-node` step verify a `cache:` input is set (`npm`/`pnpm`/`yarn`); for each `setup-python` verify `cache: pip` (or `poetry`/`pipenv`); for each `setup-go` verify `cache: true`. Quick lint: `grep -E 'setup-(node\|python\|go)' .github/workflows/*.yml -A 5 \| grep -B 1 'cache:'` shows hits. See B3.0 for the full canonical table |
-| Cache anti-pattern | Flag any `actions/cache` block whose `path:` includes `node_modules`, `.venv`, `vendor/`, or a bare `target/` — caching install dirs is almost always wrong (cache PM stores instead). Quick lint: `grep -A 5 'actions/cache@' .github/workflows/*.yml \| grep -E 'node_modules\|\.venv\|vendor/\|^[[:space:]]+- target/$'` should return nothing |
-| Artifact retention bounded | For each `upload-artifact` step, verify a `retention-days:` value within ~5 lines and ≤ 30. Stricter caps per class: scorecard ≤ 14, coverage ≤ 7, security ≤ 14, release-only on releases. Quick lint: `grep -nB 0 -A 5 'upload-artifact' .github/workflows/*.yml \| grep -E 'retention-days:'` and inspect each value |
+| Cache policy on setup-* | For each `setup-node` step verify a `cache:` input is set (`npm`/`pnpm`/`yarn`); for each `setup-python` verify `cache: pip` (or `poetry`/`pipenv`); for each `setup-go` verify `cache: true`. See B3.0 for the full canonical table and the runnable quick-lint below |
+| Cache anti-pattern | Flag any `actions/cache` block whose `path:` includes `node_modules`, `.venv`, `vendor/`, or a bare `target/` — caching install dirs is almost always wrong (cache PM stores instead). Runnable quick-lint below |
+| Artifact retention bounded | For each `upload-artifact` step, verify a `retention-days:` value within ~5 lines and ≤ 30. Stricter caps per class: scorecard ≤ 14, coverage ≤ 7, security ≤ 14, release-only on releases. Runnable quick-lint below |
+
+**Quick-lint commands** (copy-paste runnable — pipes inside markdown table cells need backslash-escaping for rendering, which breaks copy-paste; these are the unescaped forms):
+
+```bash
+# Cache policy on setup-* (verify `cache:` input is declared on setup-node/python/go steps)
+grep -E 'setup-(node|python|go)' .github/workflows/*.yml -A 5 | grep -B 1 'cache:'
+
+# Cache anti-pattern (should return nothing — caching install dirs is almost always wrong)
+grep -A 5 'actions/cache@' .github/workflows/*.yml | grep -E 'node_modules|\.venv|vendor/|^[[:space:]]+- target/$'
+
+# Artifact retention bounded (inspect each retention-days value against the per-class caps)
+grep -nB 0 -A 5 'upload-artifact' .github/workflows/*.yml | grep -E 'retention-days:'
+```
 
 ### Content Checks (grep inside files)
 | Check | Command | Pass condition |
