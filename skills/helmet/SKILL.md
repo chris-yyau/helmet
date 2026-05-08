@@ -1475,29 +1475,33 @@ gh api "repos/$OWNER/$REPO" -X PATCH \
 gh api "repos/$OWNER/$REPO/actions/permissions" -X PUT \
   -f allowed_actions=selected -F enabled=true -F sha_pinning_required=true
 
-# Workflow permissions: enable "Allow GitHub Actions to create and approve PRs"
-# (default is false). Required for `dependabot-auto-merge.yml`'s
+# Workflow permissions: try to enable "Allow GitHub Actions to create and
+# approve PRs" (default is false). Required for `dependabot-auto-merge.yml`'s
 # `hmarr/auto-approve-action` step to post the approving review that satisfies
 # branch protection's required_pull_request_reviews. If this returns 409
-# Conflict, an enterprise admin has disabled GitHub Actions PR approval at the
-# enterprise level — leave the setting at its default and DO NOT set
-# `vars.DEPENDABOT_AUTO_APPROVE` on this repo. The dependabot-auto-merge.yml
-# workflow runs in annotate-only mode there (still posts the manual-review
-# comment for unsafe bumps; safe bumps must be merged by hand).
-gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
-  --input - <<'EOF'
+# Conflict an enterprise admin has disabled GitHub Actions PR approval at the
+# enterprise level — that's fine, the workflow falls back to annotate-only
+# mode automatically (the next block sets the per-repo opt-in var
+# conditionally on this PUT's exit code).
+#
+# Value comparison in the workflow's `if:` is case-sensitive — the var must
+# be the exact string `true` to enable approve+auto-merge.
+if gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
+     --input - <<'EOF' >/dev/null 2>&1
 {
   "default_workflow_permissions": "read",
   "can_approve_pull_request_reviews": true
 }
 EOF
-
-# Per-repo opt-in for Dependabot auto-approve+auto-merge. Set to "true" when
-# the workflow-permissions PUT above succeeded (i.e. Actions ARE permitted to
-# approve PRs on this repo). Leave unset on enterprise-restricted repos so the
-# workflow stays in annotate-only mode rather than posting a failing approve
-# step on every Dependabot PR.
-gh variable set DEPENDABOT_AUTO_APPROVE --body "true" --repo "$OWNER/$REPO"
+then
+  # PUT succeeded → repo CAN have GitHub Actions approve PRs → opt in.
+  gh variable set DEPENDABOT_AUTO_APPROVE --body "true" --repo "$OWNER/$REPO"
+  echo "Dependabot auto-merge: OPTED IN (full hmarr + auto-merge workflow)"
+else
+  # PUT failed (likely 409 Conflict from enterprise-level block) → leave
+  # var unset → workflow runs in annotate-only mode.
+  echo "Dependabot auto-merge: ANNOTATE-ONLY (enterprise blocks GitHub Actions PR approval; safe bumps merged manually)"
+fi
 
 # Allowlist: github-owned always + specific third-party patterns
 gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
