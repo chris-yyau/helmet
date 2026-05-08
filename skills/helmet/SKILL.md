@@ -1475,6 +1475,21 @@ gh api "repos/$OWNER/$REPO" -X PATCH \
 gh api "repos/$OWNER/$REPO/actions/permissions" -X PUT \
   -f allowed_actions=selected -F enabled=true -F sha_pinning_required=true
 
+# Workflow permissions: enable "Allow GitHub Actions to create and approve PRs"
+# (default is false). Required for `dependabot-auto-merge.yml`'s
+# `hmarr/auto-approve-action` step to post the approving review that satisfies
+# branch protection's required_pull_request_reviews. Some Enterprise admins
+# disable this at enterprise level — the API returns 409 Conflict in that case
+# and the repo must rely on `bypass_pull_request_allowances` instead (see
+# Branch protection notes below).
+gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
+  --input - <<'EOF'
+{
+  "default_workflow_permissions": "read",
+  "can_approve_pull_request_reviews": true
+}
+EOF
+
 # Allowlist: github-owned always + specific third-party patterns
 gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
   --input - <<'EOF'
@@ -1554,7 +1569,10 @@ Add patterns for any additional third-party actions the repo uses (e.g., `anchor
 - **Job name resolution:** GitHub uses the `name:` field if present, otherwise the YAML job key. Example: a job key `zizmor` with `name: Actions security` appears as "Actions security" in status checks. Always verify with `gh api "repos/$OWNER/$REPO/commits/<sha>/check-runs" --jq '.check_runs[].name' | sort -u`
 - **Required check prerequisite:** each check must have at least one recorded run on the repository for GitHub to accept it as a required check. Run workflows at least once before setting protection
 - `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). Set `true` for team repos
-- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. Note: `dependabot-auto-merge.yml` includes its own `hmarr/auto-approve-action` step gated on `dependabot[bot]`, so required reviews and Dependabot auto-merge are independently compatible — repos that DO require reviews still get auto-merge for safe Dependabot bumps without needing `bypass_pull_request_allowances` (which is Enterprise-only on branch protection rules)
+- `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. For repos that DO require reviews, `dependabot-auto-merge.yml` is designed to satisfy the gate via two complementary mechanisms (at least one must be in place):
+  - **(a) `can_approve_pull_request_reviews: true`** on the repo's workflow permissions (set above) — lets the workflow's `hmarr/auto-approve-action` step post the approving review. Available on Free/Pro/Team/Enterprise UNLESS the enterprise admin globally disables it; check `gh api orgs/ORG/actions/permissions/workflow --jq .can_approve_pull_request_reviews` first.
+  - **(b) `bypass_pull_request_allowances: { apps: ["dependabot"] }`** on branch protection — lets Dependabot's PRs bypass the review requirement entirely. Enterprise plans only on classic branch protection rules. Useful when (a) is blocked at the enterprise level. PATCH command: `echo '{"bypass_pull_request_allowances":{"users":[],"teams":[],"apps":["dependabot"]}}' | gh api -X PATCH "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_pull_request_reviews" --input -`
+  - Repos with NEITHER will see Dependabot PRs queue indefinitely (visible fail-stuck, not silent fail-merge — by design)
 - Without branch protection, `allow_auto_merge` merges immediately with no checks — always pair them
 - **Renaming a job's `name:` field silently breaks required check enforcement** — the old name stays in branch protection but no longer matches any check, causing PRs to hang. Always update branch protection when renaming job display names
 
@@ -2324,15 +2342,32 @@ name: Dependabot Auto-Merge
 # pass. Major + production-direct minor PRs intentionally are NOT approved —
 # they sit waiting for human review (the comment step explains why).
 #
-# Tier portability: this pattern works on GitHub Free, Pro, Team, and
-# Enterprise. It does not depend on `bypass_pull_request_allowances`, which is
-# Enterprise-only on branch protection rules. Enterprise repos MAY also set
-# Dependabot bypass as defense-in-depth (redundant with this workflow but
-# survives action removal/failure); helmet does not require it.
+# Tier portability: this pattern is designed to work on GitHub Free, Pro,
+# Team, and Enterprise via two complementary mechanisms — at least ONE must be
+# in place per repo:
+#
+#   (a) `can_approve_pull_request_reviews: true` on the repo's workflow
+#       permissions (Settings → Actions → General → Workflow permissions →
+#       "Allow GitHub Actions to create and approve pull requests"). Defaults
+#       to false. Some Enterprise admins disable this at the enterprise level,
+#       which propagates down to orgs/repos and cannot be overridden lower.
+#       When (a) is allowed, the `hmarr/auto-approve-action` step posts the
+#       review and the merge step fires.
+#
+#   (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch
+#       protection (Enterprise plans only on classic branch protection rules).
+#       Lets Dependabot's PRs skip the review requirement entirely.
+#
+# The merge + comment steps use `!cancelled() &&` in their `if:` so that the
+# merge enqueue still fires on repos where (a) is blocked but (b) is set —
+# the approve step shows a visible failure (intentional, not silent) and the
+# merge fires via bypass. On repos with neither (a) nor (b), Dependabot PRs
+# queue indefinitely (visible fail-stuck rather than silent fail-merge).
 #
 # Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
+# - At least ONE of (a) or (b) above
 # - `hmarr/auto-approve-action@*` in the org/repo Actions allowlist
 # - `dependabot/fetch-metadata@*` in the org/repo Actions allowlist
 #
@@ -2389,9 +2424,17 @@ jobs:
       - name: Approve PR — patch + safe minor
         # Posts an approving review as github-actions[bot], satisfying branch
         # protection's required_approving_review_count so `gh pr merge --auto`
-        # below can fire. Same `if:` as the merge step — we approve EXACTLY
-        # the bumps we'd auto-merge. Major + production-direct minor PRs fall
-        # through unapproved and route to the comment step instead.
+        # below can fire. Same `if:` as the merge step (modulo !cancelled()) —
+        # we approve EXACTLY the bumps we'd auto-merge. Major + production-
+        # direct minor PRs fall through unapproved and route to the comment
+        # step instead.
+        #
+        # Failure mode: if `can_approve_pull_request_reviews: false` (default
+        # for new repos, or pinned by Enterprise policy), this step errors
+        # out. That's intentional — the next step uses `!cancelled()` so the
+        # merge enqueue still runs; on repos with Dependabot bypass on
+        # branch protection, the merge fires anyway. On repos with neither,
+        # the PR queues until a human approves.
         if: |
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
@@ -2399,6 +2442,8 @@ jobs:
             steps.metadata.outputs.dependency-type == 'indirect' ||
             steps.metadata.outputs.package-ecosystem == 'github_actions'))
         uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enqueue auto-merge — patch + safe minor
         # Auto-merge gating policy:
@@ -2408,12 +2453,16 @@ jobs:
         # Production direct-dependency minor bumps are intentionally NOT
         # auto-merged — they're the highest-risk minor category and warrant
         # a human read of the changelog.
+        # `!cancelled()` so the enqueue runs even if the approve step failed
+        # (covers Enterprise-restricted repos that rely on Dependabot bypass
+        # instead of in-workflow approve — see workflow header).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           (steps.metadata.outputs.dependency-type == 'direct:development' ||
-            steps.metadata.outputs.dependency-type == 'indirect' ||
-            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             (steps.metadata.outputs.dependency-type == 'direct:development' ||
+              steps.metadata.outputs.dependency-type == 'indirect' ||
+              steps.metadata.outputs.package-ecosystem == 'github_actions')))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -2440,11 +2489,17 @@ jobs:
         # Triggers when this PR is NOT in the safe auto-merge bucket above:
         #   - any major bump
         #   - minor + direct:production + non-github_actions
+        # `!cancelled()` for symmetry with the merge step — comment fires
+        # even if the approve step failed (which it shouldn't for these
+        # update types since the approve `if:` excludes them, but keep the
+        # gate explicit so the failure mode is the same shape on both
+        # branches).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-major' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           steps.metadata.outputs.dependency-type == 'direct:production' &&
-           steps.metadata.outputs.package-ecosystem != 'github_actions')
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-major' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             steps.metadata.outputs.dependency-type == 'direct:production' &&
+             steps.metadata.outputs.package-ecosystem != 'github_actions'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -2509,7 +2564,7 @@ jobs:
 **Key points:**
 - **`if: github.event.pull_request.user.login == 'dependabot[bot]'`** — workflow runs on every PR but the only job is gated; non-Dependabot PRs see the job as skipped (counts as passing for branch protection). `pull_request.user.login` is read from the immutable PR object; `github.actor` is spoofable (zizmor `bot-conditions` audit), so prefer the former
 - **`fetch-metadata` reports the highest update-type** across grouped updates — if any single dep in a grouped PR is a major bump, the whole PR routes to the major branch
-- **Auto-approve via `hmarr/auto-approve-action`** — posts an approving review as `github-actions[bot]` for the same PRs the merge step would enqueue. Same `if:` condition keeps approve-and-merge in lockstep — major + production-direct minor PRs are intentionally NOT approved (they fall through to the comment step). The action runs as `GITHUB_TOKEN` (no PAT, no long-lived secret); SHA-pinned for supply-chain safety. Tier-portable: works on GitHub Free/Pro/Team/Enterprise, doesn't require `bypass_pull_request_allowances` (which is Enterprise-only on branch protection rules)
+- **Auto-approve via `hmarr/auto-approve-action`** — posts an approving review as `github-actions[bot]` for the same PRs the merge step would enqueue. Same `if:` condition keeps approve-and-merge in lockstep — major + production-direct minor PRs are intentionally NOT approved (they fall through to the comment step). The action runs as `GITHUB_TOKEN` (no PAT, no long-lived secret); SHA-pinned for supply-chain safety. Requires `can_approve_pull_request_reviews: true` on the repo's workflow permissions (B1b). On repos where that's pinned to `false` by enterprise policy, the approve step errors visibly — the merge + comment steps use `!cancelled() && (gating)` so the merge enqueue still fires; on those repos, `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection takes over (Enterprise plans only on classic branch protection rules). Tier-portable via the dual mechanism — at least ONE of the two must be in place per repo
 - **Tiered gating**: patch/minor/major × dependency-type/ecosystem matrix. Patches always auto-approve+merge; minors only auto-approve+merge for dev deps, indirect deps, or github_actions ecosystem; majors and production-direct minors get a comment and stay open. The production-direct minor case is the highest-risk minor category and warrants a human read of the changelog
 - **`--auto --squash`** matches helmet's squash-only merge strategy (`allow_squash_merge: true`, others off). `gh pr merge --auto` enqueues; the merge fires only after all required status checks pass AND review requirements are met. The auto-approve step satisfies `required_approving_review_count` so the merge can fire even on repos that require reviews on human PRs — review gate stays on for the rest of the codebase, Dependabot's safe bumps still flow through
 - **No PAT, no `pull_request_target`** — explicit `permissions:` on a `pull_request` workflow is enough for Dependabot's restricted-token case; preserves helmet's "never `pull_request_target`" rule

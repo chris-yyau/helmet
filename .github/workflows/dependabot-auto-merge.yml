@@ -20,15 +20,32 @@ name: Dependabot Auto-Merge
 # pass. Major + production-direct minor PRs intentionally are NOT approved —
 # they sit waiting for human review (the comment step explains why).
 #
-# Tier portability: this pattern works on GitHub Free, Pro, Team, and
-# Enterprise. It does not depend on `bypass_pull_request_allowances`, which is
-# Enterprise-only on branch protection rules. Enterprise repos MAY also set
-# Dependabot bypass as defense-in-depth (redundant with this workflow but
-# survives action removal/failure); helmet does not require it.
+# Tier portability: this pattern is designed to work on GitHub Free, Pro,
+# Team, and Enterprise via two complementary mechanisms — at least ONE must be
+# in place per repo:
+#
+#   (a) `can_approve_pull_request_reviews: true` on the repo's workflow
+#       permissions (Settings → Actions → General → Workflow permissions →
+#       "Allow GitHub Actions to create and approve pull requests"). Defaults
+#       to false. Some Enterprise admins disable this at the enterprise level,
+#       which propagates down to orgs/repos and cannot be overridden lower.
+#       When (a) is allowed, the `hmarr/auto-approve-action` step posts the
+#       review and the merge step fires.
+#
+#   (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch
+#       protection (Enterprise plans only on classic branch protection rules).
+#       Lets Dependabot's PRs skip the review requirement entirely.
+#
+# The merge + comment steps use `!cancelled() &&` in their `if:` so that the
+# merge enqueue still fires on repos where (a) is blocked but (b) is set —
+# the approve step shows a visible failure (intentional, not silent) and the
+# merge fires via bypass. On repos with neither (a) nor (b), Dependabot PRs
+# queue indefinitely (visible fail-stuck rather than silent fail-merge).
 #
 # Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
+# - At least ONE of (a) or (b) above
 # - `hmarr/auto-approve-action@*` in the org/repo Actions allowlist
 # - `dependabot/fetch-metadata@*` in the org/repo Actions allowlist
 #
@@ -85,9 +102,17 @@ jobs:
       - name: Approve PR — patch + safe minor
         # Posts an approving review as github-actions[bot], satisfying branch
         # protection's required_approving_review_count so `gh pr merge --auto`
-        # below can fire. Same `if:` as the merge step — we approve EXACTLY
-        # the bumps we'd auto-merge. Major + production-direct minor PRs fall
-        # through unapproved and route to the comment step instead.
+        # below can fire. Same `if:` as the merge step (modulo !cancelled()) —
+        # we approve EXACTLY the bumps we'd auto-merge. Major + production-
+        # direct minor PRs fall through unapproved and route to the comment
+        # step instead.
+        #
+        # Failure mode: if `can_approve_pull_request_reviews: false` (default
+        # for new repos, or pinned by Enterprise policy), this step errors
+        # out. That's intentional — the next step uses `!cancelled()` so the
+        # merge enqueue still runs; on repos with Dependabot bypass on
+        # branch protection, the merge fires anyway. On repos with neither,
+        # the PR queues until a human approves.
         if: |
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
@@ -95,6 +120,8 @@ jobs:
             steps.metadata.outputs.dependency-type == 'indirect' ||
             steps.metadata.outputs.package-ecosystem == 'github_actions'))
         uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Enqueue auto-merge — patch + safe minor
         # Auto-merge gating policy:
@@ -104,12 +131,16 @@ jobs:
         # Production direct-dependency minor bumps are intentionally NOT
         # auto-merged — they're the highest-risk minor category and warrant
         # a human read of the changelog.
+        # `!cancelled()` so the enqueue runs even if the approve step failed
+        # (covers Enterprise-restricted repos that rely on Dependabot bypass
+        # instead of in-workflow approve — see workflow header).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           (steps.metadata.outputs.dependency-type == 'direct:development' ||
-            steps.metadata.outputs.dependency-type == 'indirect' ||
-            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             (steps.metadata.outputs.dependency-type == 'direct:development' ||
+              steps.metadata.outputs.dependency-type == 'indirect' ||
+              steps.metadata.outputs.package-ecosystem == 'github_actions')))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -136,11 +167,17 @@ jobs:
         # Triggers when this PR is NOT in the safe auto-merge bucket above:
         #   - any major bump
         #   - minor + direct:production + non-github_actions
+        # `!cancelled()` for symmetry with the merge step — comment fires
+        # even if the approve step failed (which it shouldn't for these
+        # update types since the approve `if:` excludes them, but keep the
+        # gate explicit so the failure mode is the same shape on both
+        # branches).
         if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-major' ||
-          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
-           steps.metadata.outputs.dependency-type == 'direct:production' &&
-           steps.metadata.outputs.package-ecosystem != 'github_actions')
+          !cancelled() && (
+            steps.metadata.outputs.update-type == 'version-update:semver-major' ||
+            (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+             steps.metadata.outputs.dependency-type == 'direct:production' &&
+             steps.metadata.outputs.package-ecosystem != 'github_actions'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
