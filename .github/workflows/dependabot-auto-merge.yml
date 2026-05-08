@@ -32,7 +32,15 @@ name: Dependabot Auto-Merge
 on:
   pull_request:
 
-permissions: {}
+# Workflow-level read baseline. An empty `permissions: {}` denies all scopes —
+# including metadata — and was observed to cause `startup_failure` on every
+# Dependabot-triggered run (the harden-runner setup step needs at least the
+# metadata-read default to initialize). `contents: read` matches the canonical
+# pattern in `security.yml`. Per-job blocks below still escalate to `contents:
+# write` and `pull-requests: write` where actually required for `gh pr merge`
+# and `gh pr comment`.
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
