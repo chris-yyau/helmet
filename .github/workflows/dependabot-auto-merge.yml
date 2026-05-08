@@ -1,33 +1,42 @@
 name: Dependabot Auto-Merge
 
-# Enqueues auto-merge on Dependabot PRs based on update-type, dependency-type,
-# and package-ecosystem. Does NOT auto-approve — the workflow only calls
-# `gh pr merge --auto --squash`.
+# Approves AND enqueues auto-merge on Dependabot PRs based on update-type,
+# dependency-type, and package-ecosystem.
 #
-# Auto-merge enqueued:
+# Auto-approve + auto-merge enqueued (same gating, same `if:`):
 #   - patch (any ecosystem, any dependency-type)
 #   - minor (dev dependencies, indirect/transitive, OR github_actions ecosystem)
 #
-# Comment + manual review (no auto-merge):
+# Comment + manual review (no auto-approve, no auto-merge):
 #   - major (any)
 #   - production direct-dependency minor (non-github_actions ecosystem)
 #
-# Auto-approve is intentionally absent. Required-PR-reviews must therefore be
-# disabled (or Dependabot must have bypass) for auto-merge to actually fire —
-# `gh pr merge --auto` queues, but GitHub waits for all branch-protection
-# requirements before merging. With `can_approve_pull_request_reviews: false`
-# (GitHub's safer default), this workflow does not need to be granted that
-# permission.
+# Auto-approval is necessary because branch protection's
+# `required_approving_review_count: 1` is the most common helmet default; the
+# `gh pr merge --auto` step only enqueues, and GitHub waits for ALL branch
+# protection requirements (including reviews) before merging. The
+# `hmarr/auto-approve-action` step posts a review as `github-actions[bot]`,
+# satisfies the review requirement, and the merge fires when remaining checks
+# pass. Major + production-direct minor PRs intentionally are NOT approved —
+# they sit waiting for human review (the comment step explains why).
+#
+# Tier portability: this pattern works on GitHub Free, Pro, Team, and
+# Enterprise. It does not depend on `bypass_pull_request_allowances`, which is
+# Enterprise-only on branch protection rules. Enterprise repos MAY also set
+# Dependabot bypass as defense-in-depth (redundant with this workflow but
+# survives action removal/failure); helmet does not require it.
 #
 # Prerequisites (helmet sets these in B1b. Configure Repo Settings):
 # - allow_auto_merge: true on the repo
 # - Branch protection with required status checks (strict: true)
-# - Branch protection without required PR reviews (or Dependabot has bypass)
+# - `hmarr/auto-approve-action@*` in the org/repo Actions allowlist
+# - `dependabot/fetch-metadata@*` in the org/repo Actions allowlist
 #
 # Token note: Dependabot-triggered workflow runs receive a read-only
 # GITHUB_TOKEN by default. The explicit `permissions:` block below restores
-# write scope. `gh pr merge --auto` only enqueues — actual merge waits for
-# branch-protection checks, so no PAT is needed.
+# write scope (including `pull-requests: write` for the approve step).
+# `gh pr merge --auto` only enqueues — actual merge waits for branch-protection
+# checks, so no PAT is needed.
 
 on:
   pull_request:
@@ -72,6 +81,20 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve PR — patch + safe minor
+        # Posts an approving review as github-actions[bot], satisfying branch
+        # protection's required_approving_review_count so `gh pr merge --auto`
+        # below can fire. Same `if:` as the merge step — we approve EXACTLY
+        # the bumps we'd auto-merge. Major + production-direct minor PRs fall
+        # through unapproved and route to the comment step instead.
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          (steps.metadata.outputs.update-type == 'version-update:semver-minor' &&
+           (steps.metadata.outputs.dependency-type == 'direct:development' ||
+            steps.metadata.outputs.dependency-type == 'indirect' ||
+            steps.metadata.outputs.package-ecosystem == 'github_actions'))
+        uses: hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363 # v4.0.0
 
       - name: Enqueue auto-merge — patch + safe minor
         # Auto-merge gating policy:
