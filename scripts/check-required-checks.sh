@@ -193,29 +193,30 @@ while IFS= read -r entry; do
     }
   ' "$wf")
 
-  case "$actual_name" in
-    MISSING)
-      echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
+  # Use `[[ == ]]` for literal string equality. The awk extraction above is
+  # metacharacter-safe (no shell→regex interpolation), but `case` patterns are
+  # glob-matched after variable expansion — a check name containing `*`, `?`,
+  # `[`, or `]` would re-introduce the same metacharacter class. `[[ == ]]`
+  # without quotes-on-RHS would still glob-match, so we quote the right-hand
+  # side to force literal-string comparison.
+  if [[ "$actual_name" == "MISSING" ]]; then
+    echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
+    drift=1
+  elif [[ "$actual_name" == "FOUND:" ]]; then
+    # Job exists with no explicit name — GitHub uses the job key as the
+    # check name, so the lock entry's `name` must equal the job key.
+    if [[ "$name" != "$job_key" ]]; then
+      echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
       drift=1
-      ;;
-    "FOUND:")
-      # Job exists with no explicit name — GitHub uses the job key as the
-      # check name, so the lock entry's `name` must equal the job key.
-      if [[ "$name" != "$job_key" ]]; then
-        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
-        drift=1
-      fi
-      ;;
-    "FOUND:$name")
-      : # explicit name match — ok
-      ;;
-    *)
-      # Strip the FOUND: sentinel for the diagnostic message.
-      observed="${actual_name#FOUND:}"
-      echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
-      drift=1
-      ;;
-  esac
+    fi
+  elif [[ "$actual_name" == "FOUND:$name" ]]; then
+    : # explicit name match — literal string equality, no glob expansion
+  else
+    # Strip the FOUND: sentinel for the diagnostic message.
+    observed="${actual_name#FOUND:}"
+    echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
+    drift=1
+  fi
 done < <(jq -c '.required[]' "$LOCK")
 
 if [[ "$drift" -eq 0 ]]; then
