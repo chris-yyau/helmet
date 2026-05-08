@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/chris-yyau/helmet/compare/v1.16.0...v1.17.0) (2026-05-08)
+
+
+### Features
+
+* **helmet:** per-repo opt-in via vars.DEPENDABOT_AUTO_APPROVE; annotate-only on opted-out tiers ([#34](https://github.com/chris-yyau/helmet/issues/34)) ([561ca7f](https://github.com/chris-yyau/helmet/commit/561ca7fff3ae1c853ea5f56b6eeee9bd81af2a83)), closes [Dive-And-Dev/perch#38](https://github.com/Dive-And-Dev/perch/issues/38) [perch#38](https://github.com/perch/issues/38) [perch#38](https://github.com/perch/issues/38) [#4](https://github.com/chris-yyau/helmet/issues/4)
+
 # [1.16.0](https://github.com/chris-yyau/helmet/compare/v1.15.2...v1.16.0) (2026-05-08)
 
 

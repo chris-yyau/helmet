@@ -1,6 +1,6 @@
 {
   "private": true,
-  "version": "1.16.0",
+  "version": "1.17.0",
   "name": "helmet",
   "description": "Repo onboarding — bootstraps test infrastructure, CI/CD, and security scanning"
 }
