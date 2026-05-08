@@ -127,39 +127,92 @@ while IFS= read -r entry; do
   fi
 
   # Find the job. The match prefers an explicit `name: <name>` line within
-  # the job's body; falls back to the bare job key when no `name:` is set.
-  # YAML parsing in shell is brittle; this is intentionally a coarse grep
-  # that catches the common cases — false negatives here just become
-  # additional drift output, which is the desired conservative behavior.
-  if grep -qE "^[[:space:]]+name:[[:space:]]+${name}\$" "$wf"; then
-    : # explicit name match
-  elif grep -qE "^[[:space:]]{2}${job_key}:[[:space:]]*\$" "$wf" \
-       && ! grep -qE "^[[:space:]]+name:[[:space:]]+" "$wf"; then
-    # job key match AND no `name:` field anywhere in the workflow's jobs
-    # block — implies the check name = job key. Imperfect but covers
-    # tests.yml's version-drift / commitlint pattern.
-    :
-  else
-    # Stricter probe: job exists but its name (or key) doesn't match.
-    if grep -qE "^[[:space:]]{2}${job_key}:" "$wf"; then
-      # Try to read its name field
-      actual_name=$(awk -v key="$job_key" '
-        $0 ~ "^[[:space:]]{2}"key":" {in_job=1; next}
-        in_job && /^[[:space:]]{2}[A-Za-z0-9_-]+:/ {in_job=0}
-        in_job && /^[[:space:]]+name:[[:space:]]+/ {sub(/^[[:space:]]+name:[[:space:]]+/, ""); print; exit}
-      ' "$wf")
-      if [[ -n "$actual_name" && "$actual_name" != "$name" ]]; then
-        echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$actual_name'"
-        drift=1
-      else
-        echo "  DRIFT: $name expected in $workflow as job '$job_key' — name field not found and key not bare"
-        drift=1
-      fi
-    else
+  # the job's body; falls back to the bare job key only when *that specific
+  # job* has no `name:` field (per-job bareness — not file-wide, so mixed
+  # workflows where some jobs are named and some aren't are handled
+  # correctly).
+  #
+  # All grep ERE patterns interpolate `$name` and `$job_key` via an awk-only
+  # parser instead of shell-level regex strings, so check names containing
+  # ERE metacharacters (`.`, `+`, `(`, etc.) match literally rather than as
+  # patterns. Job keys are restricted to `[A-Za-z0-9_-]` by GitHub Actions'
+  # YAML schema, but check names are free-form and routinely contain dots
+  # ("CodeScene Code Health Review (main)"), spaces, and slashes.
+  #
+  # Strategy: walk the file's jobs block once with awk, recording for each
+  # job key its declared `name:` value (or empty if none). Then look up the
+  # current entry's `job_key`:
+  #   - present + name matches      → ok
+  #   - present + name empty        → bare-key match against `name`
+  #   - present + name differs      → DRIFT (lock vs source disagreement)
+  #   - absent                      → DRIFT (job key not found)
+  #
+  # `actual_name` uses string equality, no regex involvement, so the lookup
+  # is metacharacter-safe.
+  # Use POSIX-portable awk (no gawk-only 3-arg `match()` or `gensub()`).
+  # `cur` holds the most recent job key we entered.
+  actual_name=$(awk -v key="$job_key" '
+    # Top-level "jobs:" header. Track depth so nested keys (env:, with:, etc.)
+    # in mappings under jobs.* do not get mistaken for top-level job keys.
+    /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+    in_jobs && /^[^[:space:]]/ { in_jobs = 0 }   # left jobs block
+
+    # Job key line: exactly two-space indent, identifier, then ":". Capture
+    # the key with sub() since BSD awk lacks 3-arg match().
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      cur = $0
+      sub(/^  /, "", cur)
+      sub(/:[[:space:]]*$/, "", cur)
+      seen[cur] = 1
+      jname[cur] = ""           # default: no explicit name
+      next
+    }
+
+    # Inside the current job. The first `    name: <value>` line at the
+    # four-space level wins. Use sub() to peel the prefix and the optional
+    # surrounding quotes so the stored value matches the rendered check name.
+    in_jobs && cur != "" && /^    name:[[:space:]]+/ {
+      val = $0
+      sub(/^    name:[[:space:]]+/, "", val)
+      sub(/^["'\'']/, "", val)
+      sub(/["'\'']$/, "", val)
+      if (jname[cur] == "") jname[cur] = val
+    }
+
+    END {
+      if (key in seen) {
+        # Sentinel-prefix the value so we can distinguish "found, name empty"
+        # (bare-key job) from "key not found at all".
+        printf("FOUND:%s", jname[key])
+      } else {
+        printf("MISSING")
+      }
+    }
+  ' "$wf")
+
+  case "$actual_name" in
+    MISSING)
       echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
       drift=1
-    fi
-  fi
+      ;;
+    "FOUND:")
+      # Job exists with no explicit name — GitHub uses the job key as the
+      # check name, so the lock entry's `name` must equal the job key.
+      if [[ "$name" != "$job_key" ]]; then
+        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
+        drift=1
+      fi
+      ;;
+    "FOUND:$name")
+      : # explicit name match — ok
+      ;;
+    *)
+      # Strip the FOUND: sentinel for the diagnostic message.
+      observed="${actual_name#FOUND:}"
+      echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
+      drift=1
+      ;;
+  esac
 done < <(jq -c '.required[]' "$LOCK")
 
 if [[ "$drift" -eq 0 ]]; then
