@@ -2277,7 +2277,7 @@ Dependabot provides three layers, all now deployed:
 
 1. **Security alerts** — flags vulnerable dependencies in the Security tab (GitHub-native, always on)
 2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed across all helmet-onboarded repos)
-3. **Auto-merge for safe bumps** — `.github/workflows/dependabot-auto-merge.yml` approves AND enqueues auto-merge for: patch bumps in any ecosystem, plus minor bumps that are dev dependencies, indirect dependencies, or github_actions. Major bumps and production-direct minor bumps get a comment and stay open for manual review. Tier-portable: works on Free/Pro/Team/Enterprise without `bypass_pull_request_allowances`
+3. **Auto-merge for safe bumps** — `.github/workflows/dependabot-auto-merge.yml` approves AND enqueues auto-merge for: patch bumps in any ecosystem, plus minor bumps that are dev dependencies, indirect dependencies, or github_actions. Major bumps and production-direct minor bumps get a comment and stay open for manual review. Tier-portable via dual mechanism — at least ONE of (a) `can_approve_pull_request_reviews: true` (in-workflow approve, available on Free/Pro/Team and most Enterprise) OR (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection (Enterprise-only, used when (a) is enterprise-policy-blocked) must be set per repo. Merge step uses `!cancelled() && (...)` so the enqueue still fires on (b)-only repos when the approve step errors
 
 **Deployed config** (`.github/dependabot.yml`):
 

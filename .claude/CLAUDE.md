@@ -38,7 +38,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypass of required checks → creates `admin-bypass` issue |
-| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | Approves AND `gh pr merge --auto --squash` for: patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment and stay open for manual review. Tier-portable: in-workflow approve via `hmarr/auto-approve-action` satisfies `required_approving_review_count` without needing `bypass_pull_request_allowances` (Enterprise-only) |
+| `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | Approves AND `gh pr merge --auto --squash` for: patch (any) + safe minor (dev/indirect/github_actions). Major + production-direct minor get a comment and stay open for manual review. Tier-portable via dual mechanism — at least ONE of (a) `can_approve_pull_request_reviews: true` (Free/Pro/Team + most Enterprise) OR (b) `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection (Enterprise-only, fallback when enterprise policy blocks (a)) must be in place. Merge step uses `!cancelled() && (...)` so (b)-only repos still merge when approve step errors |
 
 ## Conventions
 
