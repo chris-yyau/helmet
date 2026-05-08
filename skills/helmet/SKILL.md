@@ -1484,7 +1484,9 @@ gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
   "patterns_allowed": [
     "step-security/harden-runner@*",
     "ossf/scorecard-action@*",
-    "suzuki-shunsuke/pinact-action@*"
+    "suzuki-shunsuke/pinact-action@*",
+    "aquasecurity/trivy-action@*",
+    "dependabot/fetch-metadata@*"
   ]
 }
 EOF
@@ -2839,7 +2841,9 @@ gh api repos/OWNER/REPO/actions/permissions/selected-actions -X PUT \
   "patterns_allowed": [
     "step-security/harden-runner@*",
     "ossf/scorecard-action@*",
-    "suzuki-shunsuke/pinact-action@*"
+    "suzuki-shunsuke/pinact-action@*",
+    "aquasecurity/trivy-action@*",
+    "dependabot/fetch-metadata@*"
   ]
 }
 EOF
@@ -2847,7 +2851,7 @@ EOF
 
 Or via UI: **Settings → Actions → General → Actions permissions → "Allow select actions and reusable workflows"**, then add patterns.
 
-`github_owned_allowed: true` covers `actions/checkout`, `actions/setup-node`, `actions/upload-artifact`, etc. Third-party actions need explicit patterns.
+`github_owned_allowed: true` covers actions in the `actions/*` org (`actions/checkout`, `actions/setup-node`, `actions/upload-artifact`, etc.) — but **NOT** `dependabot/*` (separate org despite both being GitHub-owned). Every third-party action — and `dependabot/*` — needs an explicit pattern. Missing a pattern produces silent `startup_failure` with no jobs and no logs (the workflow can't even download the action).
 
 **Step 2: Require SHA pinning:**
 
@@ -3442,6 +3446,7 @@ done
 | Commits show "Unverified" on GitHub | SSH key not added as Signing Key | GitHub Settings > SSH keys > New SSH key > Key type: "Signing Key" |
 | `Unpinned GitHub Actions detected` in CI | AI-generated workflow used tag refs (`@v4`) | Run `pinact run --fix .github/workflows/*.yml` locally, or manually replace tags with full SHAs |
 | `startup_failure` on all workflows (0s, no logs) | `allowed_actions` set to `local_only` — blocks all external actions | Set `allowed_actions: selected` via API (see Section N. Security Scanning Backstop) with `github_owned_allowed: true` + third-party patterns |
+| `startup_failure` on a SPECIFIC workflow (other workflows OK, no jobs/logs on the failing one) | A specific action `uses:` reference is not in `selected-actions.patterns_allowed`. Easy miss: `dependabot/*` is a separate org and is **NOT** covered by `github_owned_allowed: true` despite being GitHub-owned. Same for `aquasecurity/trivy-action` if Trivy is enabled in security.yml | `gh api repos/OWNER/REPO/actions/permissions/selected-actions --jq .patterns_allowed` to see current list, then PUT a new list including the missing pattern (e.g., `dependabot/fetch-metadata@*`, `aquasecurity/trivy-action@*`). Update the canonical allowlist in B1b above when adding a new third-party action to any helmet workflow |
 | 409 Conflict on `repos/OWNER/REPO/actions/permissions/selected-actions` | Org-level Actions permissions override repo-level — repo API rejects changes when org controls the setting | Use `orgs/ORG/actions/permissions/selected-actions` instead. Check org-level first: `gh api orgs/ORG/actions/permissions/selected-actions` |
 | Attest job skipped on workflow rerun after partial failure | `BEFORE_TAG == AFTER_TAG` because semantic-release already created the tag on the first run | Add rerun recovery: check if latest tag points to HEAD via `git rev-list -n 1 "$AFTER_TAG"` (see Section D. Release Archive Attestation template) |
 | `paths` + `paths-ignore` on same event causes workflow file error | GitHub may reject combining positive and negative path filters on the same trigger | Use `paths` only (positive matching) for security workflows — `paths-ignore` is redundant when not matching excluded extensions |
