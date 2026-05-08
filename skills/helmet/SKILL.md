@@ -2409,7 +2409,7 @@ jobs:
         with:
           name: scorecard-results
           path: results.sarif
-          retention-days: 30
+          retention-days: 14
 ```
 
 **Key points:**
@@ -2418,7 +2418,7 @@ jobs:
 - Job-level permissions include `issues`, `checks`, `pull-requests` read — Scorecard checks these for its 18 scoring categories
 - Do NOT use top-level `permissions: read-all` alongside job-level permissions — they conflict and the job-level overrides, dropping the top-level grants
 - SARIF upload to Security tab requires GitHub Advanced Security (paid for private repos). Use `upload-artifact` instead on free plan. When going public, add `security-events: write` and the `codeql-action/upload-sarif` step.
-- Results are downloadable as artifact from the Actions run for 30 days
+- Results are downloadable as artifact from the Actions run for 14 days (see canonical retention table)
 
 **When going public checklist:**
 1. Set `publish_results: true`

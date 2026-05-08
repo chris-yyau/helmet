@@ -35,12 +35,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOCK="$REPO_ROOT/.github/required-checks.lock"
 
 LOCAL_ONLY=0
+STRICT_REMOTE=0
 OWNER=""
 REPO=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local-only) LOCAL_ONLY=1; shift ;;
+    # `--strict-remote` turns "couldn't verify against the server" into drift
+    # (exit 1) instead of a warn-and-continue. Default OFF so the script stays
+    # usable during repo onboarding (when branch protection isn't configured
+    # yet); ON in CI / scheduled drift checks where missing remote = real
+    # drift. Applies to (b) API/auth/shape failures and (c) "no recent
+    # commit had check-runs" path. Per-check missing in (c) (e.g., PR-only
+    # checks like version-drift on a main commit) stays warn-only because
+    # those are routine and expected.
+    --strict-remote) STRICT_REMOTE=1; shift ;;
     --owner) OWNER="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     -h|--help)
@@ -172,11 +182,21 @@ while IFS= read -r entry; do
     }
 
     # Inside the current job. The first `    name: <value>` line at the
-    # four-space level wins. Use sub() to peel the prefix and the optional
-    # surrounding quotes so the stored value matches the rendered check name.
+    # four-space level wins. Use sub() to peel the prefix, strip an inline
+    # YAML comment (a real ` #...` to end-of-line, NOT mid-token `#`), then
+    # peel optional surrounding quotes so the stored value matches the
+    # rendered check name.
     in_jobs && cur != "" && /^    name:[[:space:]]+/ {
       val = $0
       sub(/^    name:[[:space:]]+/, "", val)
+      # Strip inline comment (space-then-hash to end-of-line). The YAML
+      # comment syntax requires whitespace before the `#`, so a value like
+      # `name: foo#bar` keeps the literal `#bar`. This is lossy on quoted
+      # values containing ` #` literally (rare in GitHub Actions check
+      # names — none in the fleet today). If that becomes a concern,
+      # switch to a quote-aware parser; the simple form covers every
+      # case we hit.
+      sub(/[[:space:]]+#.*$/, "", val)
       sub(/^["'\'']/, "", val)
       sub(/["'\'']$/, "", val)
       if (jname[cur] == "") jname[cur] = val
@@ -257,17 +277,31 @@ else
   api_ok=0
 fi
 
+# Two failure paths share a common ladder: emit a label, then either drift
+# (under --strict-remote) or warn (default). The (b) check's whole purpose
+# is verifying lock matches server, so "couldn't verify" is structurally
+# the same shape as drift. Default-warn keeps onboarding ergonomic;
+# strict-remote opt-in is for CI / scheduled drift checks where the
+# absence of a verifiable answer is itself a problem.
+fail_or_warn_b() {
+  local msg="$1"
+  if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+    echo "  DRIFT: $msg (--strict-remote)"
+    drift=1
+  else
+    echo "  warn: $msg"
+  fi
+}
+
 if [[ "$api_ok" -eq 0 ]]; then
-  echo "  warn: could not read required_status_checks (no branch protection? insufficient scope?)"
+  fail_or_warn_b "could not read required_status_checks (no branch protection? insufficient scope?)"
 elif ! contexts_count=$(printf '%s' "$server_response" \
        | jq -er 'if (has("contexts") and (.contexts | type == "array")) then .contexts | length else error("missing-contexts") end' 2>/dev/null); then
   # API returned 200 but the response shape is unexpected: either `.contexts`
-  # is absent, or it's not an array. Treat as a warn-skip rather than silent
-  # pass — the API contract changed, we're targeting the wrong endpoint, or
-  # auth scope is insufficient and we got a stub response. The bare jq form
-  # `.contexts | length` would have returned 0 for missing fields (since
-  # `null | length` is 0), conflating "missing" with "real-empty".
-  echo "  warn: required_status_checks response missing .contexts field — unexpected API shape"
+  # is absent, or it's not an array. The bare jq form `.contexts | length`
+  # would have returned 0 for missing fields (since `null | length` is 0),
+  # conflating "missing" with "real-empty".
+  fail_or_warn_b "required_status_checks response missing .contexts field — unexpected API shape"
 else
   # Force C locale so shell `sort` matches jq's codepoint ordering. Without
   # this, en_US.UTF-8 dictionary order interleaves cases ("commitlint" sorts
@@ -339,7 +373,15 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
 done
 
 if [[ -z "$runs_json" ]]; then
-  echo "  warn: no recent commit (last 10) had check-runs — skipping app check"
+  # Same fail-closed ladder as (b): under --strict-remote, "couldn't fetch
+  # any check-runs from the last 10 commits" means we can't verify the
+  # source-app contract — that's drift, not an info skip.
+  if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+    echo "  DRIFT: no recent commit (last 10) had check-runs — cannot verify source_app (--strict-remote)"
+    drift=1
+  else
+    echo "  warn: no recent commit (last 10) had check-runs — skipping app check"
+  fi
   exit "$drift"
 fi
 echo "  using commit: ${sha:0:7}"
