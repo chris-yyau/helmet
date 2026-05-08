@@ -1504,8 +1504,21 @@ elif grep -qE "409|Conflict|not allow|not permit|disabled" "$PUT_STDERR"; then
   # PUT explicitly rejected by org/enterprise policy → annotate-only mode.
   # ALSO unset any pre-existing DEPENDABOT_AUTO_APPROVE so re-running the
   # setup on a previously-opted-in repo correctly downgrades to annotate-only
-  # if the policy changed (idempotent re-run).
-  gh variable delete DEPENDABOT_AUTO_APPROVE --repo "$OWNER/$REPO" 2>/dev/null || true
+  # if the policy changed (idempotent re-run). Tolerate "not found" (404)
+  # but surface real errors (auth/network) so a failed delete cannot silently
+  # leave stale opt-in state on a repo that's now enterprise-blocked.
+  DEL_STDERR=$(mktemp)
+  if gh variable delete DEPENDABOT_AUTO_APPROVE --repo "$OWNER/$REPO" 2>"$DEL_STDERR"; then
+    : # deleted successfully
+  elif grep -qE "404|Not Found|not found" "$DEL_STDERR"; then
+    : # variable didn't exist → nothing to clear, idempotent no-op
+  else
+    echo "ERROR: failed to clear DEPENDABOT_AUTO_APPROVE for annotate-only mode:" >&2
+    cat "$DEL_STDERR" >&2
+    rm -f "$DEL_STDERR"
+    exit 1
+  fi
+  rm -f "$DEL_STDERR"
   echo "Dependabot auto-merge: ANNOTATE-ONLY (enterprise blocks GitHub Actions PR approval; safe bumps merged manually)"
 else
   # Any OTHER failure (auth, network, typo'd OWNER/REPO, unknown server error)
