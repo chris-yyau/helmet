@@ -1,3 +1,10 @@
+## [1.15.2](https://github.com/chris-yyau/helmet/compare/v1.15.1...v1.15.2) (2026-05-08)
+
+
+### Bug Fixes
+
+* **helmet:** replace empty `permissions: {}` with `contents: read` baseline ([#31](https://github.com/chris-yyau/helmet/issues/31)) ([9dd0a46](https://github.com/chris-yyau/helmet/commit/9dd0a46c8998554baf79c54c7d5d1fd84db4d921)), closes [#23](https://github.com/chris-yyau/helmet/issues/23) [#22](https://github.com/chris-yyau/helmet/issues/22)
+
 ## [1.15.1](https://github.com/chris-yyau/helmet/compare/v1.15.0...v1.15.1) (2026-05-07)
 
 
