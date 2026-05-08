@@ -276,8 +276,14 @@ else
   lock_contexts=$(jq -r '.required[].name' "$LOCK" | LC_ALL=C sort)
   lock_count=$(jq -r '.required | length' "$LOCK")
 
-  missing_on_server=$(comm -23 <(echo "$lock_contexts") <(echo "$server_contexts") || true)
-  extra_on_server=$(comm -13 <(echo "$lock_contexts") <(echo "$server_contexts") || true)
+  # `echo "$empty_var"` always emits a trailing newline, so an empty side
+  # would feed `comm` a blank line and produce a phantom drift entry. Use
+  # `printf '%s\n' | grep -v '^$'` to strip blanks so genuine empty/empty,
+  # empty/non-empty, and non-empty/empty cases all report cleanly.
+  missing_on_server=$(comm -23 <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
+                                <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
+  extra_on_server=$(comm -13   <(printf '%s\n' "$lock_contexts" | grep -v '^$' || true) \
+                                <(printf '%s\n' "$server_contexts" | grep -v '^$' || true) || true)
 
   if [[ -n "$missing_on_server" ]]; then
     echo "  DRIFT: in lock but not required on server:"
@@ -315,7 +321,14 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
   candidate=$(gh api "repos/$OWNER/$REPO/commits?sha=$default_branch&per_page=1&page=$((offset+1))" \
     --jq '.[0].sha' 2>/dev/null || true)
   [[ -z "$candidate" || "$candidate" == "null" ]] && continue
-  rj=$(gh api "repos/$OWNER/$REPO/commits/$candidate/check-runs" --jq '.check_runs' 2>/dev/null || true)
+  # The check-runs endpoint paginates at 100 results per page. Repos with many
+  # integrations or repeated CI re-runs on the same commit can exceed that, so
+  # without --paginate the script emits "warn: no check-run named X" for items
+  # past page 1 instead of detecting real drift. --paginate streams items,
+  # which `jq -sc '.'` then collapses back into a single JSON array.
+  rj=$(gh api "repos/$OWNER/$REPO/commits/$candidate/check-runs" --paginate \
+         --jq '.check_runs[]' 2>/dev/null \
+       | jq -sc '.' || true)
   count=$(echo "$rj" | jq 'length' 2>/dev/null || echo 0)
   if [[ "${count:-0}" -gt 0 ]]; then
     runs_json="$rj"
