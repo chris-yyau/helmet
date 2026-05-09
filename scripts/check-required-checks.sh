@@ -64,8 +64,23 @@ while [[ $# -gt 0 ]]; do
     # checks like version-drift on a main commit) stays warn-only because
     # those are routine and expected.
     --strict-remote) STRICT_REMOTE=1; shift ;;
-    --owner) OWNER="$2"; shift 2 ;;
-    --repo) REPO="$2"; shift 2 ;;
+    # `--owner` and `--repo` each consume the next arg as a value. Validate
+    # that the next arg exists and isn't itself another flag (leading `-`)
+    # before assigning — otherwise `--owner --repo helmet` would silently
+    # set OWNER='--repo' and shift past the real owner value, and `--owner`
+    # at end-of-args would crash under `set -u` instead of giving a clean
+    # error. Use `${2:-}` for the existence probe so set -u doesn't trip
+    # on the access itself.
+    --owner)
+      if [[ -z "${2:-}" || "$2" == -* ]]; then
+        echo "error: --owner requires a non-flag value" >&2; exit 2
+      fi
+      OWNER="$2"; shift 2 ;;
+    --repo)
+      if [[ -z "${2:-}" || "$2" == -* ]]; then
+        echo "error: --repo requires a non-flag value" >&2; exit 2
+      fi
+      REPO="$2"; shift 2 ;;
     -h|--help)
       sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
