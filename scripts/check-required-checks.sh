@@ -99,10 +99,33 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
+# Validate lock file shape. Without this, a malformed lock (invalid JSON,
+# missing `.required` key, or `.required` set to a non-array) would let the
+# downstream `jq -c '.required[]' "$LOCK"` invocations produce empty output
+# silently — every read loop would then iterate over nothing and emit
+# "ok" lines on every surface, falsely declaring the repo drift-free even
+# though no checks were actually verified. Catch the malformation at startup
+# so operators see a clear error instead of a fail-OPEN green light.
+# `jq -e` exits non-zero on `false`/`null` results, so this rejects all
+# three malformation modes in one probe.
+if ! jq -e '.required | type == "array"' "$LOCK" >/dev/null 2>&1; then
+  echo "error: $LOCK is malformed JSON or missing the .required array" >&2
+  exit 2
+fi
+
 # Resolve owner/repo from git remote when not supplied.
 if [[ -z "$OWNER" || -z "$REPO" ]]; then
   remote_url=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)
   if [[ -z "$remote_url" ]]; then
+    # Without a remote we can't run (b) or (c) at all. Default behavior is
+    # "warn + LOCAL_ONLY=1" for onboarding ergonomics. Under --strict-remote
+    # the operator explicitly asked us to treat "couldn't verify against the
+    # server" as drift, so a missing remote is exit-1 drift, not a soft
+    # skip. Same semantics as the gh-CLI absence path below.
+    if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+      echo "  DRIFT: no git remote 'origin' — cannot verify against server (--strict-remote)" >&2
+      exit 1
+    fi
     echo "warn: no git remote 'origin' — running --local-only"
     LOCAL_ONLY=1
   else
@@ -406,6 +429,15 @@ if [[ "$LOCAL_ONLY" -eq 1 ]]; then
 fi
 
 if ! command -v gh >/dev/null 2>&1; then
+  # No gh CLI means we can't query branch protection or check-runs at all.
+  # Default behavior is "skip + warn" so the script stays usable on machines
+  # without gh installed. Under --strict-remote the operator explicitly asked
+  # us to treat "couldn't verify against the server" as drift, so missing gh
+  # is exit-1 drift. Same semantics as the missing-remote path above.
+  if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+    echo "[b] DRIFT: gh CLI not installed — cannot verify against server (--strict-remote)" >&2
+    exit 1
+  fi
   echo "[b] Skipped (gh CLI not installed). Re-run with gh available or pass --local-only."
   exit "$drift"
 fi
