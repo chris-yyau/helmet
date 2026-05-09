@@ -1637,11 +1637,16 @@ GitHub branch protection records required checks by literal name only — no sou
 1. **Silent rename break.** A job's `name:` (or job key, when no name is set) is renamed in a workflow .yml. The old name remains in branch protection's `contexts:` list, never matches any check on subsequent PRs, and PRs hang on a "pending" required check that never resolves. There is no error message — just a PR that never goes green.
 2. **Same-name spoofing / app drift.** A different integration starts posting a status under the same name (intentional migration that wasn't reviewed, or accidental clash). Branch protection accepts the new reporter without flagging the change.
 
-Both are addressed by recording each required check in `.github/required-checks.lock` alongside the workflow file and expected reporting app, and running `scripts/check-required-checks.sh` to verify drift across three surfaces:
+A third failure mode that doesn't depend on the lock at all but compounds with the first two:
+
+3. **Cross-workflow check-name collision.** Two workflows post a status check under the same effective name. Branch protection identifies required checks by name only — when names collide, GitHub's API picks one reporter and silently ignores the other. Accidental copy-paste, ill-considered renames, and matrix templates that resolve identically across workflows are all common sources. The collision is invisible until the wrong reporter's status determines merge eligibility.
+
+All three are addressed by recording each required check in `.github/required-checks.lock` alongside the workflow file and expected reporting app, and running `scripts/check-required-checks.sh` to verify drift across four surfaces:
 
 - **(a) Lock vs workflow source** — every required entry maps to a job (by `name:` field or bare job key) in the declared workflow file. Catches mismatched renames before deploy.
 - **(b) Lock vs branch protection** — `lock.required[].name` (set) equals server's `required_status_checks.contexts` (set). Catches lock-vs-server desync.
 - **(c) Lock vs reporter** — the most recent check-run for each required name has `app.slug == source_app`. Catches integration migration / spoofing.
+- **(d) Workflow check-name uniqueness** — every effective check name across all workflows is globally unique. Catches collisions before they get promoted into the lock; runs even when the lock is empty (early onboarding).
 
 **Lock file** (`.github/required-checks.lock`) — JSON, declarative, no `_doc` keys are interpreted by tools (they're for humans):
 
@@ -1665,8 +1670,9 @@ Recognized `source_app` values: `github-actions` (in-repo workflow), `codescene`
 **Drift detector** (`scripts/check-required-checks.sh`) — exit 0 = clean, exit 1 = drift, exit 2 = config error.
 
 ```bash
-./scripts/check-required-checks.sh                    # full check (a)+(b)+(c)
-./scripts/check-required-checks.sh --local-only       # (a) only — no API calls
+./scripts/check-required-checks.sh                    # full check (a)+(b)+(c)+(d)
+./scripts/check-required-checks.sh --local-only       # (a)+(d) only — no API calls
+./scripts/check-required-checks.sh --strict-remote    # turn (b)/(c) "couldn't verify" into drift
 ./scripts/check-required-checks.sh --owner X --repo Y # override repo target
 ```
 
@@ -1680,11 +1686,13 @@ Recognized `source_app` values: `github-actions` (in-repo workflow), `codescene`
 1. Edit `.github/required-checks.lock` (lock).
 2. Edit the workflow's `name:` field or job key (source).
 3. Run `gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks` with the updated contexts (server). Use PATCH not PUT — see B4b for the idempotent pattern.
-4. Run `scripts/check-required-checks.sh` and confirm zero drift on all three.
+4. Run `scripts/check-required-checks.sh` and confirm zero drift on all four surfaces.
 
 Skipping any step leaves the surfaces out of sync, which is exactly what the lock is supposed to prevent.
 
 **(c)-check limitations:** PR-only checks (e.g., `version-drift`, `commitlint` which only run on `pull_request` events) won't appear on a main-branch commit's check-runs. The script walks back through up to 10 recent commits looking for one with check-runs, but for those PR-only checks, expect "no check-run named X — skipping app check" warnings. This is conservative correct: the script never falsely flags drift on a check it didn't see, only on a check whose reporting app actually disagrees with the lock.
+
+**(d)-check limitations:** Reusable workflow callees (`uses: ./.github/workflows/foo.yml`) and composite-action checks aren't walked — only top-level workflow files in `.github/workflows/*.yml`. Matrix templates with `${{ matrix.* }}` interpolation are stored as their literal template string, so two workflows sharing the same template across files will be flagged (their rendered names will collide for matching matrix values). Within-workflow matrix expansion to distinct values is not flagged because GitHub's runtime renders each combination uniquely.
 
 ### B2. Workflow Hardening (apply to ALL workflows)
 

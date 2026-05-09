@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in three places, all of which can silently break merge:
+# Drift surfaces in four places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -16,9 +16,16 @@
 #       same-named status, and we didn't notice. Recorded source_app
 #       lets us flag spoofing or migration.
 #
+#   (d) Workflow check-name uniqueness: two workflows post status checks
+#       under the same effective name. Branch protection identifies
+#       required checks by name only — when names collide, GitHub picks
+#       one reporter and ignores the other. Catches accidental rename-
+#       collisions, copy-paste duplicates, and matrix template clashes
+#       across workflows.
+#
 # Modes:
-#   ./check-required-checks.sh                      # all 3 checks (default)
-#   ./check-required-checks.sh --local-only         # skip API calls (a) only
+#   ./check-required-checks.sh                      # all 4 checks (default)
+#   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
 #                                                    # = current git remote)
@@ -241,6 +248,88 @@ done < <(jq -c '.required[]' "$LOCK")
 
 if [[ "$drift" -eq 0 ]]; then
   echo "  ok: every lock entry maps to a workflow job"
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (d) Workflow check-name uniqueness — every effective status-check name
+#     across all workflows must be globally unique. Branch protection
+#     matches required checks by name only; when two jobs in different
+#     workflows post under the same name, GitHub picks one reporter
+#     non-deterministically and ignores the rest. The lock's source_app
+#     check (c) catches *which* app reported, but only after one of the
+#     duplicates is already declared required — this check catches the
+#     collision before it gets promoted into the lock.
+#
+# Effective check name = the job's explicit `name:` value, or the bare
+# job key when no `name:` is declared. Matrix `name:` templates that
+# include `${{ matrix.* }}` interpolation are stored as their literal
+# template; two jobs sharing the same template will be flagged because
+# their rendered names will collide for matching matrix values.
+#
+# Limitations: reusable workflows (`uses: ./...yml`) are not walked;
+# composite actions are not workflows. Both deferred until a real case
+# appears in the fleet.
+# ────────────────────────────────────────────────────────────────────
+echo "[d] Checking workflow check-name uniqueness…"
+
+# Collect (effective_name, workflow, job_key) tuples from every workflow.
+# Awk walks each file once; the END block emits the final job in the file.
+collected=""
+for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
+  [[ -f "$wf" ]] || continue
+  rel="${wf#$REPO_ROOT/}"
+  collected+=$(awk -v wf="$rel" '
+    function emit(   ) {
+      if (cur != "") {
+        n = (named[cur] ? jname[cur] : cur)
+        printf("%s\t%s\t%s\n", n, wf, cur)
+      }
+    }
+    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
+    in_jobs && /^[^[:space:]]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+      emit()
+      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
+      named[cur] = 0
+      jname[cur] = ""
+      next
+    }
+    in_jobs && cur != "" && /^    name:[[:space:]]+/ && !named[cur] {
+      val = $0
+      sub(/^    name:[[:space:]]+/, "", val)
+      sub(/[[:space:]]+#.*$/, "", val)
+      sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
+      jname[cur] = val
+      named[cur] = 1
+    }
+    END { emit() }
+  ' "$wf")
+  collected+=$'\n'
+done
+
+# Aggregate by effective name. Anything appearing more than once is drift.
+# Use printf to feed a clean list (drops the trailing blank line from the
+# loop's `+=$'\n'`) so awk does not see a phantom empty record.
+duplicates=$(printf '%s' "$collected" | awk -F'\t' '
+  $1 == "" { next }
+  {
+    count[$1]++
+    if (locations[$1]) { locations[$1] = locations[$1] "; " $2 ":" $3 }
+    else               { locations[$1] = $2 ":" $3 }
+  }
+  END {
+    for (n in count) if (count[n] > 1) printf("%s\t%s\n", n, locations[n])
+  }
+' | LC_ALL=C sort)
+
+if [[ -n "$duplicates" ]]; then
+  echo "  DRIFT: workflow check name(s) used by multiple jobs:"
+  while IFS=$'\t' read -r name locs; do
+    echo "    - '$name' appears in: $locs"
+  done <<< "$duplicates"
+  drift=1
+else
+  echo "  ok: every workflow job has a unique effective check name"
 fi
 
 # ────────────────────────────────────────────────────────────────────
