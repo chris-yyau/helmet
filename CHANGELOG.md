@@ -1,3 +1,11 @@
+# [1.18.0](https://github.com/chris-yyau/helmet/compare/v1.17.0...v1.18.0) (2026-05-09)
+
+
+### Features
+
+* **helmet:** detect cross-workflow check-name collisions in required-checks lint ([#36](https://github.com/chris-yyau/helmet/issues/36)) ([9bd0fa8](https://github.com/chris-yyau/helmet/commit/9bd0fa88daea432043c4e7dd5b6bef806d4d5b10)), closes [#35](https://github.com/chris-yyau/helmet/issues/35)
+* **helmet:** required-checks lock + drift detector + spec-precision pass ([#35](https://github.com/chris-yyau/helmet/issues/35)) ([c80dd39](https://github.com/chris-yyau/helmet/commit/c80dd39c97a94b6962c49817be55e57622a01d80)), closes [Dive-And-Dev/perch#38](https://github.com/Dive-And-Dev/perch/issues/38) [#1](https://github.com/chris-yyau/helmet/issues/1) [#2](https://github.com/chris-yyau/helmet/issues/2) [#api](https://github.com/chris-yyau/helmet/issues/api)
+
 # [1.17.0](https://github.com/chris-yyau/helmet/compare/v1.16.0...v1.17.0) (2026-05-08)
 
 
