@@ -124,7 +124,15 @@ if [[ -z "$OWNER" || -z "$REPO" ]]; then
     # the operator explicitly asked us to treat "couldn't verify against the
     # server" as drift, so a missing remote is exit-1 drift, not a soft
     # skip. Same semantics as the gh-CLI absence path below.
-    if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+    #
+    # `--local-only` is an explicit operator opt-out from remote surfaces.
+    # When BOTH --strict-remote and --local-only are set, --local-only wins:
+    # the operator has said "I don't care about server verification this
+    # run", so silently skipping (b)/(c) is the right outcome rather than
+    # double-failing on a contradiction. This matches the gh-CLI absence
+    # path which is already gated by the LOCAL_ONLY=1 early-exit at the
+    # (b) block below.
+    if [[ "$STRICT_REMOTE" -eq 1 && "$LOCAL_ONLY" -ne 1 ]]; then
       echo "[b] DRIFT: no git remote 'origin' — cannot verify against server (--strict-remote)" >&2
       exit 1
     fi
