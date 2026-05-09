@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in three places, all of which can silently break merge:
+# Drift surfaces in four places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -16,9 +16,22 @@
 #       same-named status, and we didn't notice. Recorded source_app
 #       lets us flag spoofing or migration.
 #
+#   (d) Workflow check-name uniqueness: two workflows post status checks
+#       under the same effective name. Branch protection identifies
+#       required checks by name only — when names collide, GitHub picks
+#       one reporter and ignores the other. Catches accidental rename-
+#       collisions, copy-paste duplicates, and matrix template clashes
+#       across workflows.
+#
+# Runtime order: (a) and (d) are local (no API) and run first; (b) and
+# (c) require gh API calls and run after. Output labels appear in the
+# order they ran — `[a]`, `[d]`, `[b]`, `[c]` — not alphabetically.
+# `--local-only` runs (a) and (d) only.
+#
 # Modes:
-#   ./check-required-checks.sh                      # all 3 checks (default)
-#   ./check-required-checks.sh --local-only         # skip API calls (a) only
+#   ./check-required-checks.sh                      # all 4 checks (default)
+#   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
+#   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
 #                                                    # = current git remote)
@@ -54,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     --owner) OWNER="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -167,7 +180,11 @@ while IFS= read -r entry; do
     # Allow a trailing inline `# comment` on the header line — YAML permits it
     # and an over-strict match would silently produce false drift.
     /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    in_jobs && /^[^[:space:]]/ { in_jobs = 0 }   # left jobs block
+    # Exit on the next top-level YAML key. Exclude `#` so a column-0
+    # comment line between job entries (legal YAML) does not silently
+    # terminate parsing — that would yield false-negative drift on
+    # any job declared after the comment.
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }   # left jobs block
 
     # Job key line: exactly two-space indent, identifier, then ":", optionally
     # followed by a trailing `# comment`. Capture the key with sub() since
@@ -241,6 +258,111 @@ done < <(jq -c '.required[]' "$LOCK")
 
 if [[ "$drift" -eq 0 ]]; then
   echo "  ok: every lock entry maps to a workflow job"
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (d) Workflow check-name uniqueness — every effective status-check name
+#     across all workflows must be globally unique. Branch protection
+#     matches required checks by name only; when two jobs in different
+#     workflows post under the same name, GitHub picks one reporter
+#     non-deterministically and ignores the rest. The lock's source_app
+#     check (c) catches *which* app reported, but only after one of the
+#     duplicates is already declared required — this check catches the
+#     collision before it gets promoted into the lock.
+#
+# Effective check name = the job's explicit `name:` value, or the bare
+# job key when no `name:` is declared. Matrix `name:` templates that
+# include `${{ matrix.* }}` interpolation are stored as their literal
+# template; two jobs sharing the same template will be flagged because
+# their rendered names will collide for matching matrix values.
+#
+# Limitations: reusable workflows (`uses: ./...yml`) are not walked;
+# composite actions are not workflows. Both deferred until a real case
+# appears in the fleet.
+# ────────────────────────────────────────────────────────────────────
+echo "[d] Checking workflow check-name uniqueness…"
+
+# Collect (effective_name, workflow, job_key) tuples from every workflow.
+# Awk walks each file once; the END block emits the final job in the file.
+collected=""
+# Walk both .yml and .yaml — GitHub Actions accepts either extension, so a
+# `.yaml` workflow that collides with a `.yml` workflow would otherwise slip
+# through (d). `nullglob` keeps the loop quiet when one extension is absent.
+# We save and restore the prior setting so callers that source this script
+# don't see their globbing behavior changed.
+#
+# `shopt -p nullglob` exits 1 when nullglob is off (default), which would
+# trip `set -e` in an assignment context. The if-condition suppresses set -e
+# for `shopt -q`, letting us record state without aborting.
+__nullglob_was_off=1
+if shopt -q nullglob; then __nullglob_was_off=0; fi
+shopt -s nullglob
+for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.yaml; do
+  [[ -f "$wf" ]] || continue
+  # Quote $REPO_ROOT inside the parameter expansion (SC2295) — without the
+  # inner quotes any glob metacharacters in the resolved repo path would be
+  # treated as a pattern and produce a wrong `rel` value.
+  rel="${wf#"$REPO_ROOT"/}"
+  collected+=$(awk -v wf="$rel" '
+    function emit(   ) {
+      if (cur != "") {
+        n = (named[cur] ? jname[cur] : cur)
+        printf("%s\t%s\t%s\n", n, wf, cur)
+      }
+    }
+    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
+    # See (a)-parser comment for why `#` is excluded — column-0 comment
+    # lines must not terminate the in_jobs scan (false-negative risk).
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
+    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+      emit()
+      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
+      named[cur] = 0
+      jname[cur] = ""
+      next
+    }
+    in_jobs && cur != "" && /^    name:[[:space:]]+/ && !named[cur] {
+      val = $0
+      sub(/^    name:[[:space:]]+/, "", val)
+      sub(/[[:space:]]+#.*$/, "", val)
+      sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
+      jname[cur] = val
+      named[cur] = 1
+    }
+    END { emit() }
+  ' "$wf")
+  collected+=$'\n'
+done
+# Restore prior nullglob setting (no-op if it was already on). Use `if`
+# rather than `[ ... ] && shopt -u`: when the condition is false the `&&`
+# chain returns non-zero and trips `set -e`, exactly the trap the
+# save-state block above sidesteps.
+if [ "$__nullglob_was_off" = "1" ]; then shopt -u nullglob; fi
+unset __nullglob_was_off
+
+# Aggregate by effective name. Anything appearing more than once is drift.
+# Use printf to feed a clean list (drops the trailing blank line from the
+# loop's `+=$'\n'`) so awk does not see a phantom empty record.
+duplicates=$(printf '%s' "$collected" | awk -F'\t' '
+  $1 == "" { next }
+  {
+    count[$1]++
+    if (locations[$1]) { locations[$1] = locations[$1] "; " $2 ":" $3 }
+    else               { locations[$1] = $2 ":" $3 }
+  }
+  END {
+    for (n in count) if (count[n] > 1) printf("%s\t%s\n", n, locations[n])
+  }
+' | LC_ALL=C sort)
+
+if [[ -n "$duplicates" ]]; then
+  echo "  DRIFT: workflow check name(s) used by multiple jobs:"
+  while IFS=$'\t' read -r name locs; do
+    echo "    - '$name' appears in: $locs"
+  done <<< "$duplicates"
+  drift=1
+else
+  echo "  ok: every workflow job has a unique effective check name"
 fi
 
 # ────────────────────────────────────────────────────────────────────
