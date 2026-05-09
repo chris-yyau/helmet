@@ -1,6 +1,6 @@
 {
   "name": "helmet",
-  "version": "1.18.3",
+  "version": "1.19.0",
   "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
   "author": {
     "name": "chris-yyau"

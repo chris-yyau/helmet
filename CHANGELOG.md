@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/chris-yyau/helmet/compare/v1.18.3...v1.19.0) (2026-05-09)
+
+
+### Features
+
+* **helmet:** support matrix-derived required check names in lock ([#40](https://github.com/chris-yyau/helmet/issues/40)) ([f62a9bc](https://github.com/chris-yyau/helmet/commit/f62a9bc8c9bb7f6f6794ec2fc8f676f02942c414))
+
 ## [1.18.3](https://github.com/chris-yyau/helmet/compare/v1.18.2...v1.18.3) (2026-05-09)
 
 
