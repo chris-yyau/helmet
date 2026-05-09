@@ -190,6 +190,16 @@ while IFS= read -r entry; do
   workflow=$(echo "$entry" | jq -r '.workflow')
   job_key=$(echo "$entry" | jq -r '.job')
   source_app=$(echo "$entry" | jq -r '.source_app')
+  # Optional `matrix_value` records the rendered matrix label that GitHub
+  # appends to a job's effective check name as `<base> (<matrix_value>)`.
+  # Examples: `"ubuntu-latest"` for a 1-dim matrix; `"ubuntu-latest, 18"`
+  # (with a literal comma-space) for a multi-dim matrix. When set, surface
+  # (a) compares against `<base> (<matrix_value>)` rather than `<base>` so
+  # matrix-derived required check names line up with the workflow's bare
+  # job. Absent / empty / null all degrade to the original non-matrix path.
+  # `// ""` collapses null and missing to the empty string so the test below
+  # is a clean string-emptiness check.
+  matrix_value=$(echo "$entry" | jq -r '.matrix_value // ""')
 
   wf="$REPO_ROOT/$workflow"
   if [[ ! -f "$wf" ]]; then
@@ -230,6 +240,15 @@ while IFS= read -r entry; do
   #   - present + name empty        → bare-key match against `name`
   #   - present + name differs      → DRIFT (lock vs source disagreement)
   #   - absent                      → DRIFT (job key not found)
+  #
+  # Matrix jobs: GitHub renders matrix-strategy jobs as
+  # `<base> (<matrix-label>)` where <base> is the explicit `name:` (or the
+  # bare job key) and <matrix-label> is the joined `${{ matrix.* }}` values.
+  # The lock entry expresses this with an optional `matrix_value` field
+  # holding the literal label content; the comparison block below appends
+  # ` (<matrix_value>)` to <base> before comparing against the lock's
+  # `name`. Each matrix combination gets its own lock entry — matching the
+  # one-name-per-context shape of branch protection's contexts list.
   #
   # `actual_name` uses string equality, no regex involvement, so the lookup
   # is metacharacter-safe.
@@ -297,26 +316,52 @@ while IFS= read -r entry; do
   # `[`, or `]` would re-introduce the same metacharacter class. `[[ == ]]`
   # without quotes-on-RHS would still glob-match, so we quote the right-hand
   # side to force literal-string comparison.
+  #
+  # `matrix_suffix` is empty for non-matrix entries (preserving v1.18.x
+  # behavior) and ` (<value>)` for matrix entries. It's appended to whichever
+  # base — explicit `name:` value or bare job key — the workflow declares,
+  # so a lock entry like {"name":"test (ubuntu-latest)","job":"test",
+  # "matrix_value":"ubuntu-latest"} aligns with a workflow job key `test:`
+  # (no explicit name) under a `strategy.matrix` block.
+  if [[ -n "$matrix_value" ]]; then
+    matrix_suffix=" ($matrix_value)"
+  else
+    matrix_suffix=""
+  fi
   if [[ "$actual_name" == "MISSING" ]]; then
     echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
     drift=1
     a_drift=1
   elif [[ "$actual_name" == "FOUND:" ]]; then
     # Job exists with no explicit name — GitHub uses the job key as the
-    # check name, so the lock entry's `name` must equal the job key.
-    if [[ "$name" != "$job_key" ]]; then
-      echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
+    # check name (plus matrix suffix for matrix jobs), so the lock entry's
+    # `name` must equal `<job_key><matrix_suffix>`.
+    expected="${job_key}${matrix_suffix}"
+    if [[ "$name" != "$expected" ]]; then
+      if [[ -n "$matrix_value" ]]; then
+        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$expected' for matrix_value='$matrix_value')"
+      else
+        echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
+      fi
       drift=1
       a_drift=1
     fi
-  elif [[ "$actual_name" == "FOUND:$name" ]]; then
-    : # explicit name match — literal string equality, no glob expansion
   else
-    # Strip the FOUND: sentinel for the diagnostic message.
+    # FOUND with explicit name. Strip the FOUND: sentinel and append the
+    # matrix suffix (empty for non-matrix entries) before comparing.
     observed="${actual_name#FOUND:}"
-    echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
-    drift=1
-    a_drift=1
+    expected="${observed}${matrix_suffix}"
+    if [[ "$name" == "$expected" ]]; then
+      : # explicit name match (with matrix suffix when present)
+    else
+      if [[ -n "$matrix_value" ]]; then
+        echo "  DRIFT: lock says '$name' but $workflow:$job_key renders as '$expected' (name='$observed', matrix_value='$matrix_value')"
+      else
+        echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
+      fi
+      drift=1
+      a_drift=1
+    fi
   fi
 done < <(jq -c '.required[]' "$LOCK")
 

@@ -37,7 +37,15 @@
     "  - greptile         Greptile GitHub App",
     "  - cubic            cubic GitHub App",
     "  - github-copilot   GitHub Copilot review",
-    "  - gitguardian      GitGuardian GitHub App"
+    "  - gitguardian      GitGuardian GitHub App",
+    "",
+    "Optional `matrix_value` field: when a workflow job uses strategy.matrix,",
+    "GitHub renders each combination as `<base> (<label>)`. Express each",
+    "combination as its own lock entry with `matrix_value` holding the literal",
+    "label content (e.g. \"ubuntu-latest\" for 1-dim, \"ubuntu-latest, 18\" for",
+    "multi-dim). Surface (a) appends ` (<matrix_value>)` to the bare-key or",
+    "explicit-name match before comparing against `name`. Omit for non-matrix",
+    "jobs — see SKILL.md B1c for full examples."
   ],
   "required": [
     {

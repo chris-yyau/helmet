@@ -1667,6 +1667,20 @@ All three are addressed by recording each required check in `.github/required-ch
 
 Recognized `source_app` values: `github-actions` (in-repo workflow), `codescene`, `codecov`, `coderabbitai`, `greptile`, `cubic`, `github-copilot`, `gitguardian`. Add new ones as needed — the script treats anything other than `github-actions` as an external app and skips the workflow-file check for it.
 
+**Matrix-derived check names** — when a workflow job uses `strategy.matrix`, GitHub renders each combination as `<base> (<label>)` where `<base>` is the explicit `name:` (or bare job key) and `<label>` is the comma-joined matrix values. Each rendered name appears as a separate context in branch protection. Express each one in the lock with an optional `matrix_value` field holding the literal label content:
+
+```json
+{
+  "required": [
+    { "name": "test (ubuntu-latest)", "source_app": "github-actions", "workflow": ".github/workflows/tests.yml", "job": "test", "matrix_value": "ubuntu-latest" },
+    { "name": "test (macos-latest)",  "source_app": "github-actions", "workflow": ".github/workflows/tests.yml", "job": "test", "matrix_value": "macos-latest" },
+    { "name": "Lint (ubuntu-latest, 18)", "source_app": "github-actions", "workflow": ".github/workflows/tests.yml", "job": "lint", "matrix_value": "ubuntu-latest, 18" }
+  ]
+}
+```
+
+Surface (a) compares the lock's `name` against `<base> (<matrix_value>)`; surfaces (b)/(c) use the rendered `name` directly (no special handling needed since branch protection and check-runs both report the rendered form). Omit `matrix_value` for non-matrix jobs — empty / absent / null all behave the same as a flat entry.
+
 **Drift detector** (`scripts/check-required-checks.sh`) — exit 0 = clean, exit 1 = drift, exit 2 = config error.
 
 ```bash
