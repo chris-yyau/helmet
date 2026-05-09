@@ -26,6 +26,7 @@
 # Modes:
 #   ./check-required-checks.sh                      # all 4 checks (default)
 #   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
+#   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
 #                                                    # = current git remote)
@@ -61,7 +62,7 @@ while [[ $# -gt 0 ]]; do
     --owner) OWNER="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -174,7 +175,11 @@ while IFS= read -r entry; do
     # Allow a trailing inline `# comment` on the header line — YAML permits it
     # and an over-strict match would silently produce false drift.
     /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    in_jobs && /^[^[:space:]]/ { in_jobs = 0 }   # left jobs block
+    # Exit on the next top-level YAML key. Exclude `#` so a column-0
+    # comment line between job entries (legal YAML) does not silently
+    # terminate parsing — that would yield false-negative drift on
+    # any job declared after the comment.
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }   # left jobs block
 
     # Job key line: exactly two-space indent, identifier, then ":", optionally
     # followed by a trailing `# comment`. Capture the key with sub() since
@@ -286,7 +291,9 @@ for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
       }
     }
     /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
-    in_jobs && /^[^[:space:]]/ { in_jobs = 0 }
+    # See (a)-parser comment for why `#` is excluded — column-0 comment
+    # lines must not terminate the in_jobs scan (false-negative risk).
+    in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
     in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
       emit()
       cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
