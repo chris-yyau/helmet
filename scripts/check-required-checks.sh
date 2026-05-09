@@ -59,8 +59,10 @@ while [[ $# -gt 0 ]]; do
     # (exit 1) instead of a warn-and-continue. Default OFF so the script stays
     # usable during repo onboarding (when branch protection isn't configured
     # yet); ON in CI / scheduled drift checks where missing remote = real
-    # drift. Applies to (b) API/auth/shape failures and (c) "no recent
-    # commit had check-runs" path. Per-check missing in (c) (e.g., PR-only
+    # drift. Applies to (b) API/auth/shape failures, (c) "no recent commit
+    # had check-runs" path, and the two pre-flight conditions that would
+    # otherwise prevent any server verification at all: missing git remote
+    # 'origin' and missing gh CLI. Per-check missing in (c) (e.g., PR-only
     # checks like version-drift on a main commit) stays warn-only because
     # those are routine and expected.
     --strict-remote) STRICT_REMOTE=1; shift ;;
@@ -123,7 +125,7 @@ if [[ -z "$OWNER" || -z "$REPO" ]]; then
     # server" as drift, so a missing remote is exit-1 drift, not a soft
     # skip. Same semantics as the gh-CLI absence path below.
     if [[ "$STRICT_REMOTE" -eq 1 ]]; then
-      echo "  DRIFT: no git remote 'origin' — cannot verify against server (--strict-remote)" >&2
+      echo "[b] DRIFT: no git remote 'origin' — cannot verify against server (--strict-remote)" >&2
       exit 1
     fi
     echo "warn: no git remote 'origin' — running --local-only"
