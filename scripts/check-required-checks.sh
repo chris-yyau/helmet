@@ -117,6 +117,18 @@ fi
 
 drift=0
 
+# Per-surface drift flags. Each surface uses its own local flag for its
+# end-of-block "ok:" message so that an "ok" still prints when this surface
+# itself found nothing — even if an earlier surface already set the global
+# `drift` flag. Without per-surface flags, an operator inspecting a multi-
+# surface failure sees the failed surface's DRIFT line but only header +
+# "using commit:" lines for clean downstream surfaces, which reads as
+# "this surface didn't finish" rather than "this surface passed". The
+# global `drift` flag still aggregates all surfaces for the script's exit
+# code — these locals only gate the per-surface ok messages.
+a_drift=0
+c_drift=0
+
 # ────────────────────────────────────────────────────────────────────
 # (a) Lock vs workflow source — every required entry's workflow file
 #     must contain a job whose name (or key when no name) matches.
@@ -136,6 +148,7 @@ while IFS= read -r entry; do
     if [[ "$source_app" == "github-actions" ]]; then
       echo "  DRIFT: $name → workflow file missing: $workflow"
       drift=1
+      a_drift=1
     else
       # External apps don't ship in our repo; skip the file check.
       :
@@ -239,12 +252,14 @@ while IFS= read -r entry; do
   if [[ "$actual_name" == "MISSING" ]]; then
     echo "  DRIFT: $name expected in $workflow as job '$job_key' — job key not found"
     drift=1
+    a_drift=1
   elif [[ "$actual_name" == "FOUND:" ]]; then
     # Job exists with no explicit name — GitHub uses the job key as the
     # check name, so the lock entry's `name` must equal the job key.
     if [[ "$name" != "$job_key" ]]; then
       echo "  DRIFT: lock says name='$name' but $workflow:$job_key has no 'name:' field (GitHub will report '$job_key')"
       drift=1
+      a_drift=1
     fi
   elif [[ "$actual_name" == "FOUND:$name" ]]; then
     : # explicit name match — literal string equality, no glob expansion
@@ -253,10 +268,11 @@ while IFS= read -r entry; do
     observed="${actual_name#FOUND:}"
     echo "  DRIFT: lock says '$name' but $workflow:$job_key has name '$observed'"
     drift=1
+    a_drift=1
   fi
 done < <(jq -c '.required[]' "$LOCK")
 
-if [[ "$drift" -eq 0 ]]; then
+if [[ "$a_drift" -eq 0 ]]; then
   echo "  ok: every lock entry maps to a workflow job"
 fi
 
@@ -523,10 +539,11 @@ while IFS= read -r entry; do
   if [[ "$actual_slug" != "$expected_app" ]]; then
     echo "  DRIFT: '$name' expected source_app='$expected_app' but reported by '$actual_slug'"
     drift=1
+    c_drift=1
   fi
 done < <(jq -c '.required[]' "$LOCK")
 
-if [[ "$drift" -eq 0 ]]; then
+if [[ "$c_drift" -eq 0 ]]; then
   echo "  ok: every required check is reported by its expected source app"
 fi
 
