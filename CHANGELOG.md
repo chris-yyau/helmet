@@ -1,3 +1,10 @@
+## [1.18.1](https://github.com/chris-yyau/helmet/compare/v1.18.0...v1.18.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **helmet:** per-surface ok-guards in check-required-checks ([#37](https://github.com/chris-yyau/helmet/issues/37)) ([87b491b](https://github.com/chris-yyau/helmet/commit/87b491bb60929dd06d2bcbcb402650572ffed805)), closes [Dive-And-Dev/jikdak#128](https://github.com/Dive-And-Dev/jikdak/issues/128)
+
 # [1.18.0](https://github.com/chris-yyau/helmet/compare/v1.17.0...v1.18.0) (2026-05-09)
 
 
