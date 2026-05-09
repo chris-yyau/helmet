@@ -1,3 +1,10 @@
+## [1.18.2](https://github.com/chris-yyau/helmet/compare/v1.18.1...v1.18.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **helmet:** validate --owner/--repo flags reject missing/flag values ([#38](https://github.com/chris-yyau/helmet/issues/38)) ([4e5298f](https://github.com/chris-yyau/helmet/commit/4e5298f6f002d827613bfd653cbd75cc0c1edfce)), closes [Dive-And-Dev/jikdak#128](https://github.com/Dive-And-Dev/jikdak/issues/128)
+
 ## [1.18.1](https://github.com/chris-yyau/helmet/compare/v1.18.0...v1.18.1) (2026-05-09)
 
 
