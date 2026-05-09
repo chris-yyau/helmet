@@ -23,6 +23,11 @@
 #       collisions, copy-paste duplicates, and matrix template clashes
 #       across workflows.
 #
+# Runtime order: (a) and (d) are local (no API) and run first; (b) and
+# (c) require gh API calls and run after. Output labels appear in the
+# order they ran — `[a]`, `[d]`, `[b]`, `[c]` — not alphabetically.
+# `--local-only` runs (a) and (d) only.
+#
 # Modes:
 #   ./check-required-checks.sh                      # all 4 checks (default)
 #   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
@@ -62,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     --owner) OWNER="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,37p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
