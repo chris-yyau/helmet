@@ -1,0 +1,74 @@
+{
+  "_doc": [
+    "Canonical required-status-check registry for this repo.",
+    "",
+    "Each entry records: the literal check name as branch protection sees it,",
+    "the expected source app reporting that name, and which workflow file +",
+    "job key produces it.",
+    "",
+    "Drift between this file and:",
+    "  (a) the workflow files' job `name:` fields (or job keys when no name),",
+    "  (b) the live branch-protection `required_status_checks.contexts`,",
+    "  (c) the actual source app reporting on a recent check-run,",
+    "is what `scripts/check-required-checks.sh` flags. Catches silent breaks",
+    "where a renamed job leaves an old name in branch protection, no longer",
+    "matched by any check, blocking PRs without obvious cause.",
+    "",
+    "When you intentionally rename, remove, or add a required check:",
+    "  1. Update this file.",
+    "  2. Update the workflow's job `name:` (or key) to match.",
+    "  3. Update branch-protection contexts via gh api PATCH",
+    "     repos/OWNER/REPO/branches/main/protection/required_status_checks",
+    "     (PATCH not PUT — see SKILL.md B4b for the idempotent pattern).",
+    "  4. Run scripts/check-required-checks.sh to confirm zero drift.",
+    "",
+    "source_app values:",
+    "  - github-actions   in-repo GitHub Actions workflow (this repo's own .yml)",
+    "  - codescene        CodeScene GitHub App",
+    "  - codecov          Codecov GitHub App",
+    "  - coderabbitai     CodeRabbit GitHub App",
+    "  - greptile         Greptile GitHub App",
+    "  - cubic            cubic GitHub App",
+    "  - github-copilot   GitHub Copilot review",
+    "  - gitguardian      GitGuardian GitHub App"
+  ],
+  "required": [
+    {
+      "name": "version-drift",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "version-drift"
+    },
+    {
+      "name": "commitlint",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/tests.yml",
+      "job": "commitlint"
+    },
+    {
+      "name": "Actions security",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "zizmor"
+    },
+    {
+      "name": "Code security",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "semgrep"
+    },
+    {
+      "name": "Dependency CVEs",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "trivy"
+    },
+    {
+      "name": "IaC misconfig",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "checkov"
+    }
+  ],
+  "advisory": []
+}

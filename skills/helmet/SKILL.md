@@ -1369,6 +1369,8 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
+| Required-checks lock | `[ -f .github/required-checks.lock ]` | File exists (canonical name + source-app registry — see B1c) |
+| Required-checks drift detector | `[ -f scripts/check-required-checks.sh ] && [ -x scripts/check-required-checks.sh ]` | Script exists and is executable |
 | Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
 | Codecov config | See Codecov detection logic below | Three-way check |
 | LICENSE | `[ -f LICENSE ]` | File exists |
@@ -1390,11 +1392,27 @@ For each `.github/workflows/*.yml`, verify:
 | `timeout-minutes` on every job | For each workflow, verify every job has `timeout-minutes` set |
 | `permissions` declared | `grep -L 'permissions' .github/workflows/*.yml` — should return nothing |
 | `defaults.run.shell` | Check `defaults.run.shell: bash` is declared (not just any `shell:` key in step-level overrides) |
-| Concurrency group | Check push/PR workflows only (not cron-only workflows like scorecard) |
+| Concurrency group | Every push/PR-triggered workflow must declare a `concurrency:` block (cron-only workflows like scorecard.yml are exempt). Cancellable workflows (cancel-in-progress: true) must use the canonical group: `${{ github.workflow }}-${{ github.event.pull_request.number \|\| github.ref }}` so two different workflows can't accidentally share a group. Non-cancellable workflows (release.yml, bypass-audit.yml) must use `cancel-in-progress: false` AND a commit/sha/ref-keyed group that won't collapse independent runs. Quick lint: `grep -L '^concurrency:' .github/workflows/*.yml` should return only cron-only files |
 | Harden-Runner | For each ubuntu job (not macOS), verify `harden-runner` step exists. Check per-job, not per-file |
 | SHA-pinned actions | `bash .github/scripts/check-pinned-uses.sh` — exit 0 = pass |
 | No `paths` + `paths-ignore` on same trigger | Verify no workflow uses both `paths` and `paths-ignore` on the same trigger event (GitHub ignores `paths-ignore` when `paths` is present) |
 | `persist-credentials: false` | Check all checkout steps except release/pinact (which need push access) |
+| Cache policy on setup-* | For each `setup-node` step verify a `cache:` input is set (`npm`/`pnpm`/`yarn`); for each `setup-python` verify `cache: pip` (or `poetry`/`pipenv`); for each `setup-go` verify `cache: true`. See B3.0 for the full canonical table and the runnable quick-lint below |
+| Cache anti-pattern | Flag any `actions/cache` block whose `path:` includes `node_modules`, `.venv`, `vendor/`, or a bare `target/` — caching install dirs is almost always wrong (cache PM stores instead). Runnable quick-lint below |
+| Artifact retention bounded | For each `upload-artifact` step, verify a `retention-days:` value within ~5 lines and ≤ 30. Stricter caps per class: scorecard ≤ 14, coverage ≤ 7, security ≤ 14, release-only on releases. Runnable quick-lint below |
+
+**Quick-lint commands** (copy-paste runnable — pipes inside markdown table cells need backslash-escaping for rendering, which breaks copy-paste; these are the unescaped forms):
+
+```bash
+# Cache policy on setup-* (verify `cache:` input is declared on setup-node/python/go steps)
+grep -E 'setup-(node|python|go)' .github/workflows/*.yml -A 5 | grep -B 1 'cache:'
+
+# Cache anti-pattern (should return nothing — caching install dirs is almost always wrong)
+grep -A 5 'actions/cache@' .github/workflows/*.yml | grep -E 'node_modules|\.venv|vendor/|^[[:space:]]+- target/$'
+
+# Artifact retention bounded (inspect each retention-days value against the per-class caps)
+grep -nB 0 -A 5 'upload-artifact' .github/workflows/*.yml | grep -E 'retention-days:'
+```
 
 ### Content Checks (grep inside files)
 | Check | Command | Pass condition |
@@ -1606,11 +1624,67 @@ Add patterns for any additional third-party actions the repo uses (e.g., `anchor
 - `strict: true` requires the PR branch to be up-to-date with main before merging (works with `allow_update_branch`)
 - **Job name resolution:** GitHub uses the `name:` field if present, otherwise the YAML job key. Example: a job key `zizmor` with `name: Actions security` appears as "Actions security" in status checks. Always verify with `gh api "repos/$OWNER/$REPO/commits/<sha>/check-runs" --jq '.check_runs[].name' | sort -u`
 - **Required check prerequisite:** each check must have at least one recorded run on the repository for GitHub to accept it as a required check. Run workflows at least once before setting protection
-- `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). Set `true` for team repos
+- `enforce_admins: false` lets repo owner bypass (solo dev escape hatch). **Exit condition:** allowed only while the repo has a single human maintainer. When a second contributor receives write/admin access, flip this to `true` (or migrate to a ruleset with "Do not allow bypassing" enabled) — the bypass-audit workflow flags admin direct-pushes after the fact but cannot prevent them, so the escape hatch is not a team-safe policy. Document the trigger ("when N>1 maintainers, flip enforce_admins") in the project's CLAUDE.md if you anticipate the change
 - `required_pull_request_reviews: null` skips review requirement — solo dev doesn't need self-approval. For repos that DO require reviews, `dependabot-auto-merge.yml` satisfies the gate by setting `can_approve_pull_request_reviews: true` on the repo's workflow permissions (configured above): the workflow's `hmarr/auto-approve-action` posts an approving review as `github-actions[bot]`. On enterprise-restricted repos where that setting is blocked at the enterprise level (PUT returns 409 Conflict), the workflow runs in **annotate-only mode** — the operator does not set `vars.DEPENDABOT_AUTO_APPROVE`, so the approve + auto-merge steps skip cleanly and only the manual-review comment fires for major / production-direct minor bumps. Safe bumps on annotate-only repos must be merged manually.
 - `bypass_pull_request_allowances: { apps: ["dependabot"] }` on branch protection was previously documented as a fallback for enterprise-restricted repos, but does NOT work in practice: GitHub auto-merge evaluates branch protection from the perspective of the user that *enabled* auto-merge (`github-actions[bot]` from this workflow's `gh pr merge --auto`), not the PR author. The bypass list contains `dependabot`, not `github-actions[bot]`, so bypass never applies. Empirically confirmed on Dive-And-Dev/perch#38 (2026-05-08): all CI green, bypass set, PR sat BLOCKED indefinitely. Do not rely on this mechanism.
 - Without branch protection, `allow_auto_merge` merges immediately with no checks — always pair them
 - **Renaming a job's `name:` field silently breaks required check enforcement** — the old name stays in branch protection but no longer matches any check, causing PRs to hang. Always update branch protection when renaming job display names
+
+### B1c. Required-Check Name Registry + Source-App Lock
+
+GitHub branch protection records required checks by literal name only — no source-app pinning, no schema. Two failure modes follow:
+
+1. **Silent rename break.** A job's `name:` (or job key, when no name is set) is renamed in a workflow .yml. The old name remains in branch protection's `contexts:` list, never matches any check on subsequent PRs, and PRs hang on a "pending" required check that never resolves. There is no error message — just a PR that never goes green.
+2. **Same-name spoofing / app drift.** A different integration starts posting a status under the same name (intentional migration that wasn't reviewed, or accidental clash). Branch protection accepts the new reporter without flagging the change.
+
+Both are addressed by recording each required check in `.github/required-checks.lock` alongside the workflow file and expected reporting app, and running `scripts/check-required-checks.sh` to verify drift across three surfaces:
+
+- **(a) Lock vs workflow source** — every required entry maps to a job (by `name:` field or bare job key) in the declared workflow file. Catches mismatched renames before deploy.
+- **(b) Lock vs branch protection** — `lock.required[].name` (set) equals server's `required_status_checks.contexts` (set). Catches lock-vs-server desync.
+- **(c) Lock vs reporter** — the most recent check-run for each required name has `app.slug == source_app`. Catches integration migration / spoofing.
+
+**Lock file** (`.github/required-checks.lock`) — JSON, declarative, no `_doc` keys are interpreted by tools (they're for humans):
+
+```json
+{
+  "_doc": ["see scripts/check-required-checks.sh and SKILL.md B1c"],
+  "required": [
+    { "name": "version-drift",     "source_app": "github-actions", "workflow": ".github/workflows/tests.yml",    "job": "version-drift" },
+    { "name": "commitlint",        "source_app": "github-actions", "workflow": ".github/workflows/tests.yml",    "job": "commitlint" },
+    { "name": "Actions security",  "source_app": "github-actions", "workflow": ".github/workflows/security.yml", "job": "zizmor" },
+    { "name": "Code security",     "source_app": "github-actions", "workflow": ".github/workflows/security.yml", "job": "semgrep" },
+    { "name": "Dependency CVEs",   "source_app": "github-actions", "workflow": ".github/workflows/security.yml", "job": "trivy" },
+    { "name": "IaC misconfig",     "source_app": "github-actions", "workflow": ".github/workflows/security.yml", "job": "checkov" }
+  ],
+  "advisory": []
+}
+```
+
+Recognized `source_app` values: `github-actions` (in-repo workflow), `codescene`, `codecov`, `coderabbitai`, `greptile`, `cubic`, `github-copilot`, `gitguardian`. Add new ones as needed — the script treats anything other than `github-actions` as an external app and skips the workflow-file check for it.
+
+**Drift detector** (`scripts/check-required-checks.sh`) — exit 0 = clean, exit 1 = drift, exit 2 = config error.
+
+```bash
+./scripts/check-required-checks.sh                    # full check (a)+(b)+(c)
+./scripts/check-required-checks.sh --local-only       # (a) only — no API calls
+./scripts/check-required-checks.sh --owner X --repo Y # override repo target
+```
+
+**When to run:**
+- Before any branch-protection change (PATCH on `/required_status_checks`).
+- Before deploying a workflow rename or job restructure.
+- Periodically as a CI lint (suggest weekly via cron or as part of helmet `--check`).
+
+**Maintenance discipline (the rename dance):** when intentionally renaming, removing, or adding a required check, update all three sides in this order:
+
+1. Edit `.github/required-checks.lock` (lock).
+2. Edit the workflow's `name:` field or job key (source).
+3. Run `gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks` with the updated contexts (server). Use PATCH not PUT — see B4b for the idempotent pattern.
+4. Run `scripts/check-required-checks.sh` and confirm zero drift on all three.
+
+Skipping any step leaves the surfaces out of sync, which is exactly what the lock is supposed to prevent.
+
+**(c)-check limitations:** PR-only checks (e.g., `version-drift`, `commitlint` which only run on `pull_request` events) won't appear on a main-branch commit's check-runs. The script walks back through up to 10 recent commits looking for one with check-runs, but for those PR-only checks, expect "no check-run named X — skipping app check" warnings. This is conservative correct: the script never falsely flags drift on a check it didn't see, only on a check whose reporting app actually disagrees with the lock.
 
 ### B2. Workflow Hardening (apply to ALL workflows)
 
@@ -1635,9 +1709,29 @@ on:
     # No paths-ignore here — required status checks must always run
 
 # 2. Concurrency — cancel stale runs on same PR
+#
+# Canonical group: workflow name + PR number (when on a PR) or ref (when not).
+# Including `${{ github.workflow }}` is what prevents two different workflows
+# from sharing a group accidentally and cancelling each other (a real footgun
+# if multiple workflows on the same repo end up with `group: ${{ github.ref }}`).
+# Falling back to `github.ref` when `pull_request.number` is null is what
+# scopes push-triggered runs per-branch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+# Intentional exceptions (must not cancel):
+#
+#   release.yml:    group: release-${{ github.ref }}, cancel-in-progress: false
+#   bypass-audit.yml: group: bypass-audit-${{ github.sha }}, cancel-in-progress: false
+#
+# Both are non-cancellable: releases must complete or fail cleanly without
+# being interrupted (cancelling mid-tag-and-push leaves orphan tags on
+# remote); the bypass audit must record one event per commit, never collapse
+# overlapping pushes. Every other workflow follows the canonical group.
+#
+# Cron-only workflows (e.g. scorecard.yml) need no concurrency block —
+# the trigger is single-fired by the schedule and cannot collide with itself.
 
 # 3. Top-level deny-all — grant per-job only
 permissions: {}
@@ -1744,6 +1838,28 @@ exit $status
 ### B3. Deploy Components
 
 Deploy in this order — each is independent:
+
+#### B3.0. Canonical Cache Policy (apply to every language template)
+
+Cache the package manager's *store* (immutable, hash-keyed by lockfile) — never the `node_modules` / `venv` / `target` *install directory* (writable, partial, polluted by build outputs). The setup-* actions handle this correctly when given a `cache:` input; respect their default key strategy (lockfile hash) rather than rolling a manual `actions/cache` block.
+
+| Language | Cache action | Cache key (managed automatically) | What's cached | Anti-pattern (don't) |
+|---|---|---|---|---|
+| TypeScript / JavaScript | `actions/setup-node` with `cache: npm` (or `pnpm` / `yarn`) | `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` hash | npm download cache (`~/.npm`), not `node_modules` | manual `actions/cache` keyed on `node_modules/**`; cross-OS sharing of the install dir |
+| Python | `actions/setup-python` with `cache: pip` | `requirements.txt` / `pyproject.toml` hash | pip wheel cache (`~/.cache/pip`), not site-packages / `.venv` | caching the venv; `pip install --target` outputs |
+| Go | `actions/setup-go` with `cache: true` | `go.sum` hash | module cache (`~/go/pkg/mod`) + build cache (`~/.cache/go-build`) | manual `actions/cache` for `vendor/`; caching workspace state |
+| Rust | `Swatinem/rust-cache@<sha>` (purpose-built) | `Cargo.lock` + toolchain | `~/.cargo/registry`, `~/.cargo/git`, `target/` (selectively) | `actions/cache` on `target/` directly — too coarse, picks up build artifacts |
+| Swift | `cache: true` on resolved-package step | `Package.resolved` hash | `~/Library/Caches/org.swift.swiftpm` | caching `.build/` |
+
+Why this matters cost-wise: a cache *hit* saves the install time but a *miss* must still upload the cache, so caching the wrong thing (large install dirs) costs upload time on every miss without saving anything on the hit. GitHub also bills on the upload edge.
+
+GitHub-managed cache storage is part of the org's free tier (10 GB on most plans, larger on Enterprise) — keep entries small to avoid LRU eviction of high-value (e.g. Rust) caches. Lint check below catches the most common drift.
+
+**Audit rules** (added to the table in B0. Audit Checks):
+- For each `setup-node` step in any workflow, verify a `cache:` input is set (`npm`, `pnpm`, or `yarn`).
+- For each `setup-python` step, verify `cache: pip` (or `poetry`/`pipenv` if applicable).
+- For each `setup-go` step, verify `cache: true`.
+- Flag any `actions/cache` block whose `path:` includes `node_modules`, `.venv`, `vendor/`, or a bare `target/` — these are install-dir anti-patterns and almost always wrong.
 
 #### A. Tests + Coverage (Codecov)
 
@@ -1921,6 +2037,17 @@ jobs:
 #### C. Compliance (SBOM + License + Vulnerability — combined single job)
 
 Combine SBOM generation, license compliance, and vulnerability scanning into a single `compliance` job. This saves 2 billable minutes per push (3 jobs → 1), since each GitHub Actions job is billed minimum 1 minute even if it runs in 15 seconds.
+
+**Scanner cadence (cost-aware split — where each layer runs):**
+
+| Trigger | What runs | Where it lives | Why this cadence |
+|---------|-----------|----------------|------------------|
+| **PR** (every push) | Trivy CVE scan, Semgrep, Checkov, Zizmor (job-level skip on path-irrelevant changes) | `security.yml` | PR-time signal; required checks block merge on CRITICAL/HIGH |
+| **Push to main** | SBOM generation (Syft), Trivy license + vuln scan, Cosign keyless sign (if release artifact) | `tests.yml` `compliance` job (`if: github.event_name == 'push'`) | SBOM is a release-artifact concern, not a per-PR concern — generating it for unmerged code wastes minutes and produces unused artifacts |
+| **Release** (`release: types: [published]`) | GitHub-native build provenance attestation (when eligible — see Section D) + Cosign keyless sign for binaries | separate `release.yml` / `release-build.yml` | OIDC + attestations need release context, isolated permissions |
+| **Weekly** (cron) | OpenSSF Scorecard (18 security practices) | `scorecard.yml` | Repo-level posture doesn't change per-commit; weekly catches drift in the practice score |
+
+This matches ChatGPT's "PR = lightweight, push = artifact, release = signing, weekly = posture" recommendation — the compliance and scorecard jobs are already gated to non-PR triggers; PR-time scanning is delegated to `security.yml`. Don't move SBOM generation onto PR triggers — it would burn minutes and storage on artifacts that never ship.
 
 ```yaml
   compliance:
@@ -2282,7 +2409,7 @@ jobs:
         with:
           name: scorecard-results
           path: results.sarif
-          retention-days: 30
+          retention-days: 14
 ```
 
 **Key points:**
@@ -2291,7 +2418,7 @@ jobs:
 - Job-level permissions include `issues`, `checks`, `pull-requests` read — Scorecard checks these for its 18 scoring categories
 - Do NOT use top-level `permissions: read-all` alongside job-level permissions — they conflict and the job-level overrides, dropping the top-level grants
 - SARIF upload to Security tab requires GitHub Advanced Security (paid for private repos). Use `upload-artifact` instead on free plan. When going public, add `security-events: write` and the `codeql-action/upload-sarif` step.
-- Results are downloadable as artifact from the Actions run for 30 days
+- Results are downloadable as artifact from the Actions run for 14 days (see canonical retention table)
 
 **When going public checklist:**
 1. Set `publish_results: true`
@@ -2352,6 +2479,16 @@ updates:
 - **Trivy** scans in CI on every push — catches vulns at build time
 - **Dependabot** monitors continuously on GitHub — catches vulns between pushes
 - **OpenSSF Scorecard** checks whether Dependabot/similar is enabled — scores the practice
+
+**Auth model (explicit, since this is the part that bites):**
+
+Dependabot-triggered workflows are *not* like normal pull_request workflows. Three rules apply:
+
+1. **Event = `pull_request`, never `pull_request_target`.** Dependabot raises PRs from a `dependabot/*` branch within the same repo (not from a fork), so `pull_request` is the right event. `pull_request_target` would run with the *target's* secrets and a writable token against PR-controlled HEAD code — for any other event type that's a known supply-chain class. We never use it. The workflow checks out nothing PR-controlled regardless.
+2. **`GITHUB_TOKEN` is read-only by default on Dependabot runs**, regardless of the workflow's `permissions:` defaults at the org/repo level. The explicit job-level `permissions: contents: write + pull-requests: write` is what restores the write scope used by `hmarr/auto-approve-action` and `gh pr merge --auto` and `gh pr comment`. Without that explicit block, every write-side step would fail with a 403. **No PAT is used and no `secrets.*` other than `GITHUB_TOKEN` are referenced** — Actions secrets are unavailable to Dependabot-triggered runs even if they exist.
+3. **Approval capability is org/enterprise-gated.** `hmarr/auto-approve-action` posts a review as `github-actions[bot]`, which only counts toward `required_pull_request_reviews` when `can_approve_pull_request_reviews: true` is set on the org or repo. Helmet B1b's setup script attempts to flip this at the repo level. When an enterprise admin pins it off at the enterprise level, the PUT returns 409 Conflict — the script then falls back: `vars.DEPENDABOT_AUTO_APPROVE` is left unset (or actively cleared on idempotent re-run), the approve + auto-merge steps skip cleanly via the `vars.DEPENDABOT_AUTO_APPROVE == 'true'` `if:` guard, and the workflow runs in annotate-only mode. **Bypass via `bypass_pull_request_allowances.apps:["dependabot"]` does NOT work** as a fallback because GitHub auto-merge evaluates branch protection from the actor that *enabled* auto-merge (`github-actions[bot]` from `gh pr merge --auto`), not the PR author — verified empirically on Dive-And-Dev/perch#38 (2026-05-08). Do not reintroduce.
+
+A repo on this design is therefore one of two states: opted in (full automation; `vars.DEPENDABOT_AUTO_APPROVE="true"` AND `can_approve_pull_request_reviews:true` server-side), or opted out (annotate-only; var unset, regardless of why). The `vars.*` value is the single source of truth in the workflow `if:` conditions; the underlying capability is a property of the org/enterprise setting that B1b probes at setup.
 
 **Auto-merge workflow** (`.github/workflows/dependabot-auto-merge.yml`):
 
@@ -3030,7 +3167,19 @@ Especially valuable for AI-written workflows — LLMs default to version tags (`
 
 **Critical: Dependabot alerts do NOT cover SHA-pinned actions.** GitHub docs state that for GitHub Actions, Dependabot alerts only fire for semantic version refs — not SHA versioning. The Pin → Detect → Fix → Upgrade chain (SHA check + Zizmor + Pinact + Dependabot version updates) is not redundant — it is the **necessary maintenance mechanism** for a SHA pin strategy. Without it, pinned actions silently go stale with no alerts.
 
-**Artifact retention:** All workflows using `upload-artifact` must set `retention-days: 5–30`. GitHub defaults to 90 days; GitHub Free orgs have only 500 MB artifact storage. Scorecard: 30 days. Coverage/reports: 5 days.
+**Artifact retention:** Every `upload-artifact` step must set `retention-days` explicitly — GitHub's default is 90 days, which burns through the Free org's 500 MB / Team org's 2 GB monthly budget fast and keeps potentially sensitive scanner output around longer than necessary.
+
+| Artifact class | Retention | Rationale |
+|---|---|---|
+| Coverage / test reports (PR-time) | **3–7 days** | Codecov + the PR conversation already capture results; raw artifacts only useful for debugging a recent failure |
+| Security scanner summaries (PR-time) | **7–14 days** | Slightly longer for triage when the same scanner re-fires across rebases, but no value beyond the PR's lifetime |
+| Scorecard SARIF / JSON | **14 days** | Only needed between weekly runs — was 30 (down 2026-05-08), shorter is fine since runs are weekly. Don't go below 14 because the scheduled run can slip |
+| Release artifacts (binaries, archives) | **release workflow only — not PR runs** | Built-and-attested release artifacts attach to the GitHub Release directly; do not also upload them as workflow artifacts on PRs (doubles storage, extends retention window unnecessarily) |
+| SBOM (push to main) | **30 days** | SBOM is a rolling per-commit snapshot; keep enough history to investigate "which commit introduced this dep?" without paying 90 days |
+
+**Audit rules** (added to B0. Audit Checks):
+- `grep -rE 'upload-artifact' .github/workflows/` — for each match, verify a `retention-days:` value within ~5 lines (BSD/GNU grep `-A 5`). Flag missing values and any value > 30 (force a justification).
+- Specifically: `scorecard.yml` `retention-days` ≤ 14, coverage upload steps ≤ 7, security uploads ≤ 14. Helmet's own `scorecard.yml` was bumped from 30 → 14 in this PR; cascading to fleet repos happens at the next per-repo helmet run.
 
 **Relationship with local scanning:**
 | Scanner | Local (seatbelt/hooks) | CI (security.yml) | CI (compliance job) |
