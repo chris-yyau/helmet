@@ -1,3 +1,10 @@
+## [1.18.3](https://github.com/chris-yyau/helmet/compare/v1.18.2...v1.18.3) (2026-05-09)
+
+
+### Bug Fixes
+
+* **helmet:** --strict-remote hard-fails on missing remote/gh; validate lock shape ([#39](https://github.com/chris-yyau/helmet/issues/39)) ([3aa8fb3](https://github.com/chris-yyau/helmet/commit/3aa8fb34f899b303d9be9e5a17378d5a0ccc5e65)), closes [Dive-And-Dev/jikdak#128](https://github.com/Dive-And-Dev/jikdak/issues/128) [#CLI](https://github.com/chris-yyau/helmet/issues/CLI)
+
 ## [1.18.2](https://github.com/chris-yyau/helmet/compare/v1.18.1...v1.18.2) (2026-05-09)
 
 
