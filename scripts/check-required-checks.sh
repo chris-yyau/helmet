@@ -280,9 +280,24 @@ echo "[d] Checking workflow check-name uniqueness…"
 # Collect (effective_name, workflow, job_key) tuples from every workflow.
 # Awk walks each file once; the END block emits the final job in the file.
 collected=""
-for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
+# Walk both .yml and .yaml — GitHub Actions accepts either extension, so a
+# `.yaml` workflow that collides with a `.yml` workflow would otherwise slip
+# through (d). `nullglob` keeps the loop quiet when one extension is absent.
+# We save and restore the prior setting so callers that source this script
+# don't see their globbing behavior changed.
+#
+# `shopt -p nullglob` exits 1 when nullglob is off (default), which would
+# trip `set -e` in an assignment context. The if-condition suppresses set -e
+# for `shopt -q`, letting us record state without aborting.
+__nullglob_was_off=1
+if shopt -q nullglob; then __nullglob_was_off=0; fi
+shopt -s nullglob
+for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.yaml; do
   [[ -f "$wf" ]] || continue
-  rel="${wf#$REPO_ROOT/}"
+  # Quote $REPO_ROOT inside the parameter expansion (SC2295) — without the
+  # inner quotes any glob metacharacters in the resolved repo path would be
+  # treated as a pattern and produce a wrong `rel` value.
+  rel="${wf#"$REPO_ROOT"/}"
   collected+=$(awk -v wf="$rel" '
     function emit(   ) {
       if (cur != "") {
@@ -313,6 +328,12 @@ for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
   ' "$wf")
   collected+=$'\n'
 done
+# Restore prior nullglob setting (no-op if it was already on). Use `if`
+# rather than `[ ... ] && shopt -u`: when the condition is false the `&&`
+# chain returns non-zero and trips `set -e`, exactly the trap the
+# save-state block above sidesteps.
+if [ "$__nullglob_was_off" = "1" ]; then shopt -u nullglob; fi
+unset __nullglob_was_off
 
 # Aggregate by effective name. Anything appearing more than once is drift.
 # Use printf to feed a clean list (drops the trailing blank line from the
