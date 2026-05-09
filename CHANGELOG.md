@@ -1,3 +1,10 @@
+## [1.19.1](https://github.com/chris-yyau/helmet/compare/v1.19.0...v1.19.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **helmet:** print [c] Skipped lines under --local-only and missing-gh paths ([#41](https://github.com/chris-yyau/helmet/issues/41)) ([1fdbae8](https://github.com/chris-yyau/helmet/commit/1fdbae8d70a1b5bd350df42bdcf1634275006987))
+
 # [1.19.0](https://github.com/chris-yyau/helmet/compare/v1.18.3...v1.19.0) (2026-05-09)
 
 
