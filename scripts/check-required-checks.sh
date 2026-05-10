@@ -202,6 +202,15 @@ while IFS= read -r entry; do
   # job. Absent / empty / null all degrade to the original non-matrix path.
   # `// ""` collapses null and missing to the empty string so the test below
   # is a clean string-emptiness check.
+  #
+  # We do NOT parse the workflow's strategy block to verify a matrix is
+  # actually declared on this job — surface (a) is purely a name-match.
+  # That means setting matrix_value on a non-matrix job and writing a
+  # self-consistent `name` (matching `<base> (<matrix_value>)`) passes here.
+  # The misuse only manifests downstream as a hung PR (branch protection
+  # required name has no posting check). Document this in the lock _doc
+  # and SKILL.md B1c so users know to omit matrix_value on non-matrix jobs;
+  # do not rely on this surface to flag the mistake.
   matrix_value=$(echo "$entry" | jq -r '.matrix_value // ""')
 
   wf="$REPO_ROOT/$workflow"
