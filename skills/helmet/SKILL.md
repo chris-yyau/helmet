@@ -1679,7 +1679,7 @@ Recognized `source_app` values: `github-actions` (in-repo workflow), `codescene`
 }
 ```
 
-Surface (a) compares the lock's `name` against `<base> (<matrix_value>)`; surfaces (b)/(c) use the rendered `name` directly (no special handling needed since branch protection and check-runs both report the rendered form). Omit `matrix_value` for non-matrix jobs — empty / absent / null all behave the same as a flat entry.
+Surface (a) compares the lock's `name` against `<base> (<matrix_value>)`; surfaces (b)/(c) use the rendered `name` directly (no special handling needed since branch protection and check-runs both report the rendered form); surface (d) reads workflow YAML directly and ignores `matrix_value` entirely. Omit `matrix_value` for non-matrix jobs — empty / absent / null all behave the same as a flat entry. Including `matrix_value` on a non-matrix job will produce surface (a) drift, since the asserted ` (<matrix_value>)` suffix won't be in the rendered check name; the script flags this rather than silently ignoring it, because asserting a matrix shape that the workflow doesn't actually have is itself a drift signal worth surfacing.
 
 **Drift detector** (`scripts/check-required-checks.sh`) — exit 0 = clean, exit 1 = drift, exit 2 = config error.
 
