@@ -1,3 +1,10 @@
+## [1.19.2](https://github.com/chris-yyau/helmet/compare/v1.19.1...v1.19.2) (2026-05-10)
+
+
+### Bug Fixes
+
+* **helmet:** SC2001 parameter expansion + matrix_value doc polish ([#42](https://github.com/chris-yyau/helmet/issues/42)) ([746e646](https://github.com/chris-yyau/helmet/commit/746e64670512bf938583e25d14cba705933ac1fc)), closes [#40](https://github.com/chris-yyau/helmet/issues/40)
+
 ## [1.19.1](https://github.com/chris-yyau/helmet/compare/v1.19.0...v1.19.1) (2026-05-09)
 
 
