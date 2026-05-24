@@ -4087,7 +4087,7 @@ See the combined snippet in D2 below — D1 lives at the top of that snippet, NO
 Run D1's signal capture, D2's install command, D2's auto-followup sync (conditional), D4's gitignore append, and the final status read as a **single combined Bash invocation** — Claude Code's Bash tool spawns a fresh process per call, so the `SIGNAL_*` variables MUST stay in the same shell session:
 
 ```bash
-set -e  # fail-fast: any failed step aborts the rest (codegraph install error, sync failure, etc.)
+set -e  # fail-fast for the critical install step; sync/status/gitignore failures are downgraded individually so the completion report can still emit
 
 # D1: capture pre-run signals (must precede every codegraph mutation)
 SIGNAL_MCP=$([ -f .mcp.json ] && grep -q '"codegraph"' .mcp.json && echo T || echo F)
@@ -4100,22 +4100,48 @@ SIGNAL_CODEGRAPH_DIR=$([ -d .codegraph ] && echo T || echo F)
 printf 'PHASE_D_SIGNAL SIGNAL_MCP=%s SIGNAL_SETTINGS=%s SIGNAL_CLAUDE_MD=%s SIGNAL_CODEGRAPH_DIR=%s\n' \
   "$SIGNAL_MCP" "$SIGNAL_SETTINGS" "$SIGNAL_CLAUDE_MD" "$SIGNAL_CODEGRAPH_DIR"
 
-# D2: idempotent install + initialize + index (works for every signal state)
+# D2: idempotent install + initialize + index (works for every signal state).
+# This is the ONE step where set -e should bite — if install fails, partial
+# state is documented as "easier to inspect than to undo" and Phase D should
+# abort before touching gitignore or claiming success.
 codegraph install --target claude --location local --yes
 
-# D2 auto-followup: catch watcher-missed drift only on a re-run
-if [ "$SIGNAL_CODEGRAPH_DIR" = "T" ]; then codegraph sync; fi
-
-# D4: gitignore append (idempotent — see D4 for the standalone form)
-if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then
-  printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore
+# D2 auto-followup sync — non-fatal: a stale watcher state or DB-lock contention
+# from codegraph's own daemon shouldn't kill the rest of Phase D. The caller
+# detects PHASE_D_SYNC_FAILED in stdout and annotates the report accordingly.
+if [ "$SIGNAL_CODEGRAPH_DIR" = "T" ]; then
+  codegraph sync || printf 'PHASE_D_SYNC_FAILED=1\n'
 fi
 
-# Status read for the completion report (parsed from stdout alongside signals)
-codegraph status --json
+# D4 (gitignore append) — non-fatal: read-only FS or permission error shouldn't
+# block the status report. Idempotent; safe to retry manually.
+if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then
+  printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore || printf 'PHASE_D_GITIGNORE_FAILED=1\n'
+fi
+
+# Status read — bracketed with sentinels so the caller can extract the JSON
+# deterministically even if codegraph emits stderr-warnings or status emits
+# pretty-printed multi-line JSON. Non-fatal: status failure (DB locked by
+# concurrent watcher write, etc.) shouldn't crash Phase D — the caller falls
+# back to a "status unavailable" report variant.
+printf 'PHASE_D_STATUS_BEGIN\n'
+codegraph status --json 2>/dev/null || printf '{"error":"status read failed"}'
+printf '\nPHASE_D_STATUS_END\n'
 ```
 
-**Reading signals back after the Bash call returns:** Claude parses the `PHASE_D_SIGNAL ...` line from the combined stdout (it's the first output line, distinctive prefix). Those four values then drive the "Phase D Complete" report shape (first-install vs re-run) and the per-file annotations ("already current" vs "created"). Shell variables themselves do not survive the Bash call's exit — the stdout-emission is the only persistence channel.
+**Reading signals + status back after the Bash call returns:** Claude parses three deterministic regions from the combined stdout:
+
+1. `PHASE_D_SIGNAL SIGNAL_MCP=... SIGNAL_SETTINGS=... SIGNAL_CLAUDE_MD=... SIGNAL_CODEGRAPH_DIR=...` — the first output line, fixed prefix. Drives report-shape (first-install vs re-run) and per-file annotations.
+2. Between `PHASE_D_STATUS_BEGIN` and `PHASE_D_STATUS_END` sentinels — the `codegraph status --json` payload (or `{"error":...}` fallback on failure).
+3. Optional fault flags: `PHASE_D_SYNC_FAILED=1` (the conditional `codegraph sync` failed on a re-run; since this branch runs only when `SIGNAL_CODEGRAPH_DIR=T` pre-D2, the installer's `initializeLocalProject` early-returned without rebuilding the index, so the status counts reflect the pre-run index state and may be stale until the user manually re-runs `codegraph sync`); `PHASE_D_GITIGNORE_FAILED=1` (gitignore append failed; user must add `.codegraph/` manually).
+
+Shell variables themselves do not survive the Bash call's exit — the stdout-emission is the only persistence channel.
+
+**Per-file annotations in the re-run report:** parse the four `SIGNAL_*` values from the `PHASE_D_SIGNAL` line. For each MCP-config file, the annotation differs:
+
+- `.mcp.json` — `"already current"` when `SIGNAL_MCP=T`, `"created"` when `SIGNAL_MCP=F`
+- `.claude/settings.json` — `"already current"` when `SIGNAL_SETTINGS=T`, `"created"` when `SIGNAL_SETTINGS=F`
+- `.claude/CLAUDE.md` — `"block already present"` when `SIGNAL_CLAUDE_MD=T`, `"block added"` when `SIGNAL_CLAUDE_MD=F` (different vocabulary because the file pre-exists; only the marker-delimited block is what Phase D adds)
 
 Use the combined block above as Phase D's primary action. The standalone command shown below is for human reference and documentation only — it omits D1's signal capture, the conditional sync, and the gitignore step.
 
@@ -4158,15 +4184,7 @@ Stream the codegraph output so the user can see progress on large repos. Do NOT 
 
 **On failure:** if `codegraph install` exits non-zero, capture stderr, emit `[d] Failed — codegraph install: <one-line stderr>`, and exit Phase D without rolling back partial state. Partial state (e.g., `.mcp.json` written but `.codegraph/` initialization failed mid-build) is easier to inspect and fix than to undo. The most common build failures are out-of-memory on very large repos (codegraph documents a `--max-memory` flag) and individual files with unsupported syntax (codegraph logs and skips them, then continues — these are warnings, not errors).
 
-**Auto-followup sync (only when D1's signal 4 was T pre-run):**
-
-If `$SIGNAL_CODEGRAPH_DIR == T` (captured in D1 before D2 ran — re-run / audit scenario), follow D2 with:
-
-```bash
-codegraph sync
-```
-
-This catches drift the file watcher may have missed (codegraph daemon wasn't running during a batch rename, network-mount filesystem, `CODEGRAPH_NO_WATCH=1`). On a fresh first-install (`$SIGNAL_CODEGRAPH_DIR == F` pre-run), **skip this step** — the install command's internal `cg.indexAll()` is the initial build and `codegraph sync` would be redundant.
+**Auto-followup sync rationale (already embedded in D2's combined block):** the `if [ "$SIGNAL_CODEGRAPH_DIR" = "T" ]; then codegraph sync || ... ; fi` step inside the combined block catches drift the file watcher may have missed (codegraph daemon wasn't running during a batch rename, network-mount filesystem, `CODEGRAPH_NO_WATCH=1`). On a fresh first-install (`SIGNAL_CODEGRAPH_DIR=F` pre-run), this branch is skipped automatically — the install command's internal `cg.indexAll()` is the initial build, and `codegraph sync` would be redundant. Do NOT execute `codegraph sync` as a separate Bash call here — it's already conditional in the combined block above.
 
 ## D3. Manual Override Commands
 
@@ -4180,21 +4198,11 @@ D2's unified install handles every signal state correctly. Reach for the targete
 
 **Do NOT use `codegraph init --index` in helmet runs.** It has no `--yes` flag and may prompt interactively for the watch-fallback when the file watcher cannot run; helmet's automation expects non-interactive commands. Reserve `codegraph init --index` for interactive terminal use only.
 
-## D4. Gitignore Update
+## D4. Gitignore Append (Reference — Already Embedded in D2)
 
-Append `.codegraph/` to `.gitignore` unless already present:
+D4's gitignore append is part of D2's combined Bash block (lines starting `if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then ...`). Do NOT execute this step as a separate Bash call — the combined block already handles it idempotently and emits `PHASE_D_GITIGNORE_FAILED=1` to stdout on failure (read-only FS, permission error).
 
-```bash
-if [ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore; then
-  :  # already ignored
-else
-  printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore
-fi
-```
-
-The `.codegraph/` directory contains a SQLite database derived deterministically from source files. Committing it would balloon the repo, churn diffs on every edit, and produce merge conflicts on every branch sync. Local-only is the only sensible mode.
-
-If `.gitignore` doesn't exist yet (some repos rely entirely on global gitignore), create one with just the codegraph entry — do NOT generate boilerplate ignores, that's the user's call.
+**Rationale (why this step exists):** the `.codegraph/` directory contains a SQLite database derived deterministically from source files. Committing it would balloon the repo, churn diffs on every edit, and produce merge conflicts on every branch sync. Local-only is the only sensible mode. The combined block creates `.gitignore` if absent — some repos rely entirely on global gitignore, so a missing project `.gitignore` is normal; in that case the block writes a new one with just the codegraph entry (no boilerplate ignores, that's the user's call).
 
 ## Phase D Complete: CodeGraph Index
 
@@ -4231,17 +4239,17 @@ Report format (re-run — any of the four `SIGNAL_*` variables was T pre-D2):
 
 **Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
 **Pending sync:** <pendingChanges.added + modified + removed> files
-  (only include this line when `$SIGNAL_CODEGRAPH_DIR` was T pre-D2 — post-install `codegraph sync` ran)
+  (only include this line when the parsed `PHASE_D_SIGNAL` showed `SIGNAL_CODEGRAPH_DIR=T` — meaning the conditional `codegraph sync` ran post-install. Append `(sync failed — counts may be stale)` if `PHASE_D_SYNC_FAILED=1` was also emitted)
 **MCP config:**
-  - .mcp.json — <"already current" when $SIGNAL_MCP=T; "created" when $SIGNAL_MCP=F>
-  - .claude/settings.json — <"already current" when $SIGNAL_SETTINGS=T; "created" when $SIGNAL_SETTINGS=F>
-  - .claude/CLAUDE.md — <"block already present" when $SIGNAL_CLAUDE_MD=T; "block added" when $SIGNAL_CLAUDE_MD=F>
+  - .mcp.json — <"already current" when parsed `SIGNAL_MCP=T`; "created" when `SIGNAL_MCP=F`>
+  - .claude/settings.json — <"already current" when parsed `SIGNAL_SETTINGS=T`; "created" when `SIGNAL_SETTINGS=F`>
+  - .claude/CLAUDE.md — <"block already present" when parsed `SIGNAL_CLAUDE_MD=T`; "block added" when `SIGNAL_CLAUDE_MD=F`>
 ```
-Always list all three MCP-config files (newly created ones are part of the wiring, not omitted). The annotation distinguishes "this was already wired before Phase D ran" from "Phase D just created this."
+Always list all three MCP-config files (newly created ones are part of the wiring, not omitted). The annotation distinguishes "this was already wired before Phase D ran" from "Phase D just created this." Reminder: `SIGNAL_*` are values parsed from stdout's `PHASE_D_SIGNAL` line — shell variables themselves did not survive the Bash call's exit.
 
 If `journalMode != "wal"`, append a warning line: `⚠ Journal mode is "<journalMode>" — reads may block on writes; this filesystem (network mount, WSL2 /mnt) doesn't support WAL.`
 
-If `pendingChanges.added + modified + removed > 0` after the audit-mode `codegraph sync`, append a hint: `→ <count> file(s) still pending — run `codegraph sync` again or check the file watcher.`
+If `pendingChanges.added + modified + removed > 0` after the post-install `codegraph sync` (re-run path, parsed signal `SIGNAL_CODEGRAPH_DIR=T`), append a hint: `→ <count> file(s) still pending — run `codegraph sync` again or check the file watcher.`
 
 When Phase D is skipped, emit a single one-line `[d] Skipped — <reason>` and proceed to the helmet wrap-up summary.
 
