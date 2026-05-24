@@ -4211,7 +4211,7 @@ D2's unified install handles every signal state correctly. Reach for the targete
 
 ## D4. Gitignore Append (Reference — Already Embedded in D2)
 
-D4's gitignore append is part of D2's combined Bash block (lines starting `if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then ...`). Do NOT execute this step as a separate Bash call — the combined block already handles it idempotently and emits `PHASE_D_GITIGNORE_FAILED=1` to stdout on failure (read-only FS, permission error).
+D4's gitignore append is part of D2's combined Bash block (the conditional starting with `if ! ( [ -f .gitignore ] && grep -Eq '^[[:space:]]*/?\.codegraph/?([[:space:]]|#|$)' .gitignore ); then ...` — extended regex idempotent across `.codegraph/`, `.codegraph`, `/.codegraph/`, and inline-comment variants). Do NOT execute this step as a separate Bash call — the combined block already handles it idempotently and emits `PHASE_D_GITIGNORE_FAILED=1` to stdout on failure (read-only FS, permission error).
 
 **Rationale (why this step exists):** the `.codegraph/` directory contains a SQLite database derived deterministically from source files. Committing it would balloon the repo, churn diffs on every edit, and produce merge conflicts on every branch sync. Local-only is the only sensible mode. The combined block creates `.gitignore` if absent — some repos rely entirely on global gitignore, so a missing project `.gitignore` is normal; in that case the block writes a new one with just the codegraph entry (no boilerplate ignores, that's the user's call).
 
