@@ -4028,7 +4028,7 @@ Build a tree-sitter-parsed symbol/call graph for the repo and wire it into Claud
 ## When to Use
 
 - Onboarding any repo that contains code in a codegraph-supported language — Phase D auto-runs after Phase C when the `codegraph` CLI is on PATH
-- Refreshing the index after a large refactor (codegraph also incrementally re-indexes via a built-in file watcher with ~500 ms debounce, so manual refresh is rare)
+- Refreshing the index after a large refactor — codegraph's built-in file watcher (~500 ms debounce after file write) normally keeps the index current, so manual refresh is rare. Manual `codegraph sync` matters mainly when the watcher cannot run (network mounts, WSL2 `/mnt`, `CODEGRAPH_NO_WATCH=1`) or after batch operations the watcher missed
 - Adding code intelligence to a repo that already has tests + CI + CLAUDE.md but no `.codegraph/` index
 - Auditing whether a repo's MCP / codegraph wiring is current (re-running Phase D no-ops on a fully-configured repo and reports current index counts)
 
@@ -4057,20 +4057,25 @@ Already have Node? `npm install -g @colbymchenry/codegraph` works on any version
 
 Do NOT auto-install the codegraph CLI on the user's behalf. The standalone installer drops files into `~/.codegraph/` and `~/.local/bin/`, which is a deliberate one-time decision the user should consent to.
 
-## D1. Detect Existing Setup
+## D1. Capture Pre-Run Signals (For Reporting Only)
 
-Before installing anything, detect what's already wired so the report distinguishes "first install" from "refresh" from "already current":
+Capture the pre-run state of four signals — used only to distinguish "first install" from "audit re-run" in the completion report. **Phase D's runtime path does NOT branch on these signals**: the codegraph installer is fully idempotent (deep-equal JSON checks, marker-delimited section replacement, and early-return when `.codegraph/` already exists per `src/installer/index.ts`'s `initializeLocalProject`), and the git-sync-hooks fallback uses `isSyncHookInstalled` to avoid re-installing hooks on every run. So one command path handles every state correctly.
 
-| Signal | Means |
-|--------|-------|
-| `./.mcp.json` exists with `mcpServers.codegraph` key | MCP entry already wired |
-| `./.claude/settings.json` has any `mcp__codegraph__*` permission | Auto-allow already wired |
-| `./.claude/CLAUDE.md` contains `<!-- CODEGRAPH_START -->` marker | Instructions block already present |
-| `./.codegraph/` directory exists | Index already built |
+| Signal | Detection | Means |
+|--------|-----------|-------|
+| 1. MCP entry | `./.mcp.json` exists with `mcpServers.codegraph` key | MCP server already wired |
+| 2. Permissions | `./.claude/settings.json` has any `mcp__codegraph__*` permission | Auto-allow already wired |
+| 3. Instructions | `./.claude/CLAUDE.md` contains `<!-- CODEGRAPH_START -->` marker | CLAUDE.md block already present |
+| 4. Index | `./.codegraph/` directory exists | SQLite index already built |
 
-If all four signals are present, Phase D enters **audit mode**: re-run `codegraph install --target claude --location local --yes` (idempotent — reports `unchanged` per file when content matches; safely no-ops the index init+build step because `.codegraph/` is already initialized), then run `codegraph sync` to incrementally refresh the index in case the file watcher missed updates (e.g., the codegraph daemon wasn't running during a large refactor or batch rename). Proceed to "Phase D Complete" for the status report. This matches the "Audit re-run" row in D3.
+Record these to a local map (e.g., `PRE_RUN_SIGNALS={mcp:T/F, settings:T/F, claude_md:T/F, codegraph_dir:T/F}`). These will drive the report shape in "Phase D Complete" (first-install vs audit-re-run vs partial-repair), nothing else.
 
-If any of the four signals is missing, run D2 (the unified install command) — it self-heals by creating only what's needed (config + `.codegraph/` + initial index) and leaves existing entries untouched via the idempotent semantics described in D2's table. If only the index is missing (`.codegraph/` absent but MCP config present), prefer the targeted `codegraph init --index` from D3's table to avoid re-running the config writer.
+**Why the signals do not gate commands:**
+
+- Signal-1 set but stale `.mcp.json` value: the installer's deep-equal check catches it and rewrites; no signal-only check could detect this without re-reading the file anyway.
+- Signal-4 set but index drifted (watcher disabled, batch rename): caught by an explicit `codegraph sync` followup when signal 4 was T pre-run (see D2).
+- Mixed states (e.g., 2 of 4 signals): handled by the installer's per-file idempotency without special-casing.
+- `codegraph init --index` has no `--yes` flag and may prompt interactively for the watch-fallback when the file watcher cannot run — Phase D uses `codegraph install … --yes` for every state so the run never blocks on a prompt.
 
 ## D2. Install + Initialize + Index (Unified)
 
@@ -4115,18 +4120,27 @@ Stream the codegraph output so the user can see progress on large repos. Do NOT 
 
 **On failure:** if `codegraph install` exits non-zero, capture stderr, emit `[d] Failed — codegraph install: <one-line stderr>`, and exit Phase D without rolling back partial state. Partial state (e.g., `.mcp.json` written but `.codegraph/` initialization failed mid-build) is easier to inspect and fix than to undo. The most common build failures are out-of-memory on very large repos (codegraph documents a `--max-memory` flag) and individual files with unsupported syntax (codegraph logs and skips them, then continues — these are warnings, not errors).
 
-## D3. Fallback Paths (Partial State or Explicit Refresh)
+**Auto-followup sync (only when D1's signal 4 was T pre-run):**
 
-D2's unified command covers the common happy path. Use these targeted commands only when the state requires it:
+If `PRE_RUN_SIGNALS.codegraph_dir` was T before D2 ran (re-run / audit scenario), follow D2 with:
 
-| State | Command | Why |
-|-------|---------|-----|
-| MCP config present (D1 signals 1–3), `.codegraph/` missing | `codegraph init --index` | Builds the index without re-running the installer / re-writing config |
-| All four D1 signals present, want incremental refresh (large refactor) | `codegraph sync` | Picks up drift the file watcher may have missed; orders of magnitude faster than full re-index |
-| All four D1 signals present, want full rebuild (corrupted index, codegraph upgrade) | `rm -rf .codegraph && codegraph init --index` | Reconstructs from scratch; rare — only when `sync` doesn't converge |
-| Audit re-run on already-configured repo | `codegraph install … --yes` (idempotent — reports `unchanged` per file) + `codegraph sync` | Re-validates config + refreshes index in one workflow |
+```bash
+codegraph sync
+```
 
-For the standard helmet onboarding flow (a fresh repo with no `.codegraph/`), D2 is sufficient — these fallbacks exist for repair, refresh, and audit scenarios.
+This catches drift the file watcher may have missed (codegraph daemon wasn't running during a batch rename, network-mount filesystem, `CODEGRAPH_NO_WATCH=1`). On a fresh first-install (signal 4 was F), **skip this step** — the install command's internal `cg.indexAll()` is the initial build and `codegraph sync` would be redundant.
+
+## D3. Manual Override Commands
+
+D2's unified install handles every signal state correctly. Reach for the targeted commands below only when the user explicitly requests a manual override (debug workflow, force rebuild, repair after codegraph upgrade):
+
+| User scenario | Command | Notes |
+|---------------|---------|-------|
+| "Force rebuild from scratch — the index seems corrupted" | `rm -rf .codegraph && codegraph install --target claude --location local --yes` | The fresh install command re-creates the index, idempotent on config files |
+| "Just refresh the index, don't touch config" | `codegraph sync` | Incremental refresh only; safe to run repeatedly |
+| "Build the index for a project I configured manually (no helmet run)" | `codegraph install --target claude --location local --yes` | Same command as D2 — handles "config present, index missing" via installer idempotency |
+
+**Do NOT use `codegraph init --index` in helmet runs.** It has no `--yes` flag and may prompt interactively for the watch-fallback when the file watcher cannot run; helmet's automation expects non-interactive commands. Reserve `codegraph init --index` for interactive terminal use only.
 
 ## D4. Gitignore Update
 

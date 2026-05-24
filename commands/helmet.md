@@ -16,7 +16,6 @@ Analyze the user's request to determine which phase(s) to run:
 - If the user asks to generate, refresh, or update CLAUDE.md: run **Phase C** (CLAUDE.md Generation)
 - If the user asks about codegraph, code graph, structural search, or code intelligence: run **Phase D** (CodeGraph Index)
 - If the user says "onboard" or "setup" without specifics: run all four phases in order (A → B → C → D)
-
-Phase D auto-runs after Phase C completes when the codegraph CLI is on PATH and a supported language was detected. If codegraph is missing, Phase D prints an install hint and skips cleanly — the rest of the helmet run is unaffected.
+  - **Phase D auto-runs** after Phase C if the `codegraph` CLI is on PATH and the repo contains a codegraph-supported language (Phase D's D0 check runs its own detection — does not require Phase A to have run in the same invocation); if codegraph is missing, Phase D prints an install hint and skips cleanly (Phases A/B/C are unaffected)
 
 Follow the skill instructions precisely, executing each step in sequence.
