@@ -2,16 +2,16 @@
 name: helmet
 description: >
   Full repo onboarding — bootstraps test infrastructure (Phase A), wires the CI/CD pipeline (Phase B),
-  and generates a project CLAUDE.md (Phase C).
+  generates a project CLAUDE.md (Phase C), and builds a local CodeGraph index for Claude Code (Phase D).
   Use when onboarding a new repo, setting up tests + CI from scratch, adding Codecov/pinact/SBOM/security scanning,
   auditing pipeline completeness, fixing CI failures, deploying pipeline changes across multiple repos,
-  or generating/refreshing a repo's CLAUDE.md.
+  generating/refreshing a repo's CLAUDE.md, or wiring a tree-sitter code intelligence index.
   Replaces ci-pipeline-setup and test-setup.
 ---
 
 # Repo Pipeline Setup
 
-Three-phase repo onboarding: **Phase A** bootstraps test infrastructure (language detection, framework detection, test runner + coverage, smoke tests, gold-standard templates). **Phase B** wires the CI/CD pipeline (Codecov, SHA pinning, SBOM, vulnerability scanning, security backstop, Dependabot, commit signing, OpenSSF Scorecard, CodeScene, GitGuardian). **Phase C** generates a project CLAUDE.md by analyzing the repo's tech stack, structure, commands, conventions, and CI configuration — so every new Claude Code session starts with full project context.
+Four-phase repo onboarding: **Phase A** bootstraps test infrastructure (language detection, framework detection, test runner + coverage, smoke tests, gold-standard templates). **Phase B** wires the CI/CD pipeline (Codecov, SHA pinning, SBOM, vulnerability scanning, security backstop, Dependabot, commit signing, OpenSSF Scorecard, CodeScene, GitGuardian). **Phase C** generates a project CLAUDE.md by analyzing the repo's tech stack, structure, commands, conventions, and CI configuration — so every new Claude Code session starts with full project context. **Phase D** builds a tree-sitter code knowledge graph via [CodeGraph](https://github.com/colbymchenry/codegraph) — Claude Code answers structural questions (where is X defined, what calls Y, what would break) from the index instead of fanning out grep/Read subagents.
 
 ## When to Use
 
@@ -38,6 +38,12 @@ Three-phase repo onboarding: **Phase A** bootstraps test infrastructure (languag
 - Repo has no `.claude/CLAUDE.md` or it contains only boilerplate
 - User asks to generate or refresh a project's CLAUDE.md
 - Significant infrastructure changes (new test framework, CI additions) made CLAUDE.md stale
+
+**Phase D (CodeGraph Index):**
+- Onboarding a new repo with code in a codegraph-supported language — auto-runs after Phase C completes when the `codegraph` CLI is on PATH
+- Refreshing the index after a large refactor (codegraph also incrementally re-indexes on file save, so manual refresh is rarely needed)
+- Adding code intelligence to a repo that already has tests + CI + CLAUDE.md but no `.codegraph/` index
+- User asks to build a code graph, wire codegraph, or enable structural code search
 
 ---
 
@@ -4007,8 +4013,188 @@ Review monthly to spot drift: scanners you keep bypassing, reviews that consiste
 
 ## Key Decisions
 
-- **Phase C runs last** — it needs Phase A (test info) and Phase B (CI info) to generate complete content. Running it earlier would miss CI workflows that Phase B just created
+- **Phase C runs after A and B but before D** — it needs Phase A (test info) and Phase B (CI info) to generate complete content. Running it earlier would miss CI workflows that Phase B just created
 - **Under 100 lines** — CLAUDE.md is context tax on every conversation. Dense and factual beats comprehensive and long
 - **Refresh preserves manual edits** — users add custom sections. Diff-and-merge, don't overwrite
 - **No opinions, only facts** — CLAUDE.md documents what IS, not best practices or recommendations. Those belong in rules/ or skills/
 - **Standalone invocable** — Phase C can run independently of A+B for repos that already have test + CI infrastructure but no CLAUDE.md
+
+---
+
+# Phase D: CodeGraph Index
+
+Build a tree-sitter-parsed symbol/call graph for the repo and wire it into Claude Code as a local MCP server via [CodeGraph](https://github.com/colbymchenry/codegraph). Once indexed, Claude Code answers structural questions ("where is X defined?", "what calls Y?", "what would break if I change Z?") directly from the index instead of fanning out grep/glob/Read subagents — the upstream benchmark reports ~35% cheaper, ~57% fewer tokens, ~71% fewer tool calls on larger codebases.
+
+## When to Use
+
+- Onboarding any repo that contains code in a codegraph-supported language — Phase D auto-runs after Phase C when the `codegraph` CLI is on PATH
+- Refreshing the index after a large refactor (codegraph also incrementally re-indexes via a built-in file watcher with ~500 ms debounce, so manual refresh is rare)
+- Adding code intelligence to a repo that already has tests + CI + CLAUDE.md but no `.codegraph/` index
+- Auditing whether a repo's MCP / codegraph wiring is current (re-running Phase D no-ops on a fully-configured repo and reports current index counts)
+
+**Supported languages** (helmet's set **bolded**; full list per upstream README, verified against `src/extraction/languages/`):
+**TypeScript/JavaScript**, **Python**, **Go**, **Rust**, **Swift**, Java, Kotlin, C#, C, C++, Dart, Ruby, Scala, Vue, Svelte, Liquid, Lua, Luau, PHP, Pascal/Delphi
+
+## D0. Precondition Check
+
+Phase D NEVER blocks the helmet run. If any precondition fails, print a single `[d] Skipped — <reason>` line and proceed cleanly.
+
+| Check | How | If fails |
+|-------|-----|----------|
+| `codegraph` CLI on PATH | `command -v codegraph >/dev/null 2>&1` | Print install hint (below), emit `[d] Skipped — codegraph CLI not installed`, exit Phase D |
+| Supported language detected | Detect codegraph-supported languages directly using the same signals as [A1a Language Detection](#a1a-language-detection) (config files first, file extensions as fallback) — proceed if any of TypeScript/JavaScript, Python, Go, Rust, Swift, Java, Kotlin, C#, C, C++, Dart, Ruby, Scala, Vue, Svelte, Liquid, Lua, Luau, PHP, Pascal/Delphi is present. When Phase D is chained after Phase A in the same helmet run, reuse Phase A's detection result to avoid double work | Emit `[d] Skipped — no codegraph-supported language detected`, exit Phase D |
+| Repo is a git repo OR has source files | `git rev-parse --show-toplevel` succeeds OR Phase A counted source files | Emit `[d] Skipped — no source code to index`, exit Phase D |
+
+**Install hint (shown only when the CLI is missing):**
+```
+CodeGraph is not installed. Install it once globally to enable Phase D on every helmet run:
+
+  curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+
+After install completes, re-run /helmet — Phase D will pick up automatically.
+Already have Node? `npm install -g @colbymchenry/codegraph` works on any version.
+```
+
+Do NOT auto-install the codegraph CLI on the user's behalf. The standalone installer drops files into `~/.codegraph/` and `~/.local/bin/`, which is a deliberate one-time decision the user should consent to.
+
+## D1. Detect Existing Setup
+
+Before installing anything, detect what's already wired so the report distinguishes "first install" from "refresh" from "already current":
+
+| Signal | Means |
+|--------|-------|
+| `./.mcp.json` exists with `mcpServers.codegraph` key | MCP entry already wired |
+| `./.claude/settings.json` has any `mcp__codegraph__*` permission | Auto-allow already wired |
+| `./.claude/CLAUDE.md` contains `<!-- CODEGRAPH_START -->` marker | Instructions block already present |
+| `./.codegraph/` directory exists | Index already built |
+
+If all four signals are present, Phase D enters **audit mode**: re-run `codegraph install --target claude --location local --yes` (idempotent — reports `unchanged` per file when content matches; safely no-ops the index init+build step because `.codegraph/` is already initialized), then run `codegraph sync` to incrementally refresh the index in case the file watcher missed updates (e.g., the codegraph daemon wasn't running during a large refactor or batch rename). Proceed to "Phase D Complete" for the status report. This matches the "Audit re-run" row in D3.
+
+If any of the four signals is missing, run D2 (the unified install command) — it self-heals by creating only what's needed (config + `.codegraph/` + initial index) and leaves existing entries untouched via the idempotent semantics described in D2's table. If only the index is missing (`.codegraph/` absent but MCP config present), prefer the targeted `codegraph init --index` from D3's table to avoid re-running the config writer.
+
+## D2. Install + Initialize + Index (Unified)
+
+Run the codegraph installer non-interactively, scoped to **this repo only**:
+
+```bash
+codegraph install --target claude --location local --yes
+```
+
+With `--location local --yes`, this single command does ALL of the following (verified against `src/installer/index.ts`):
+
+1. **Writes MCP configuration** — three files into the repo (table below)
+2. **Initializes the project** — creates `.codegraph/` at the repo root via `CodeGraph.init(projectPath)`
+3. **Builds the initial index** — parses every supported source file with tree-sitter and persists the symbol/edge graph to a local SQLite database via `cg.indexAll()`
+4. **Optionally installs git sync hooks** — if codegraph's file watcher cannot run on this filesystem (network mount, WSL2 `/mnt`, `CODEGRAPH_NO_WATCH=1`), the installer installs `commit`/`pull`/`checkout` git hooks so the index refreshes automatically after each git op. Under `--yes` the installer applies the default fallback (install hooks when watch is disabled); inspect `git config --get-all core.hooksPath` and `.git/hooks/` afterward if you want to confirm
+
+**Files written into the repo:**
+
+| File | Purpose | Idempotent behavior |
+|------|---------|---------------------|
+| `./.mcp.json` | MCP server entry: `{ codegraph: { type: "stdio", command: "codegraph", args: ["serve", "--mcp"] } }` | Deep-equal check — no rewrite if identical |
+| `./.claude/settings.json` | Seven `mcp__codegraph__*` allowlist entries (`codegraph_search`, `codegraph_context`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_node`, `codegraph_status`) | Merges with existing permissions; preserves unrelated keys |
+| `./.claude/CLAUDE.md` | Instruction block between `<!-- CODEGRAPH_START -->` and `<!-- CODEGRAPH_END -->` markers (~1.6 KB) explaining when Claude Code should prefer codegraph tools over native grep/Read | Marker-delimited section replacement — preserves all other CLAUDE.md content verbatim |
+| `./.codegraph/` | SQLite database of parsed symbols + edges (gitignored — see D4) | First-build on fresh repo; later runs detect existing init and skip re-initialization |
+
+**First-run index timing (single-threaded, per-project):**
+
+| Repo size | Approximate timing |
+|-----------|---------------------|
+| <500 source files | seconds |
+| 500–3,000 | <1 min |
+| 3,000–10,000 | 1–3 min |
+| >10,000 | 3–10 min |
+
+Stream the codegraph output so the user can see progress on large repos. Do NOT background the command — Phase D's completion report depends on `codegraph status --json` returning real counts.
+
+**Why `--location local`, not `--global`:** the global install adds codegraph's ~5 KB of MCP tool descriptions to every Claude Code session, including sessions in repos that don't have `.codegraph/`. Per-repo local scope keeps that overhead inside repos where it pays off. Phase D MUST use local scope; never write codegraph entries to `~/.claude.json` or `~/.claude/`. Additionally, the index-build step in D2 only fires when `--location local`; under `--global` the installer prints a "Quick start" hint and leaves index initialization to the user.
+
+**What the auto-allow covers:** the seven pre-permitted tools are codegraph's query and navigation surface — symbol search, call-graph traversal (`callers`, `callees`), impact analysis, single-node inspection, composite context, and index status. Two of them (`codegraph_node` and `codegraph_context`) can optionally return source snippets when the caller passes `includeCode=true` — in routine "where is X defined" queries this is benign, but be aware the auto-allow is not a hard read-only gate; it's "allow the normal index-query surface." The two tools that bulk-return data (`codegraph_explore`, which returns source verbatim across multiple symbols; and `codegraph_files`, which returns the project file tree) are deliberately NOT pre-allowed by codegraph's installer — they prompt the first time Claude Code calls them. Do NOT pass `--no-permissions` (would force the user to approve every search query interactively).
+
+**Composability with Phase C's CLAUDE.md:** because the codegraph block uses HTML-comment markers, it composes cleanly with whatever Phase C wrote. Re-running either phase preserves the other's content byte-for-byte outside its markers.
+
+**On failure:** if `codegraph install` exits non-zero, capture stderr, emit `[d] Failed — codegraph install: <one-line stderr>`, and exit Phase D without rolling back partial state. Partial state (e.g., `.mcp.json` written but `.codegraph/` initialization failed mid-build) is easier to inspect and fix than to undo. The most common build failures are out-of-memory on very large repos (codegraph documents a `--max-memory` flag) and individual files with unsupported syntax (codegraph logs and skips them, then continues — these are warnings, not errors).
+
+## D3. Fallback Paths (Partial State or Explicit Refresh)
+
+D2's unified command covers the common happy path. Use these targeted commands only when the state requires it:
+
+| State | Command | Why |
+|-------|---------|-----|
+| MCP config present (D1 signals 1–3), `.codegraph/` missing | `codegraph init --index` | Builds the index without re-running the installer / re-writing config |
+| All four D1 signals present, want incremental refresh (large refactor) | `codegraph sync` | Picks up drift the file watcher may have missed; orders of magnitude faster than full re-index |
+| All four D1 signals present, want full rebuild (corrupted index, codegraph upgrade) | `rm -rf .codegraph && codegraph init --index` | Reconstructs from scratch; rare — only when `sync` doesn't converge |
+| Audit re-run on already-configured repo | `codegraph install … --yes` (idempotent — reports `unchanged` per file) + `codegraph sync` | Re-validates config + refreshes index in one workflow |
+
+For the standard helmet onboarding flow (a fresh repo with no `.codegraph/`), D2 is sufficient — these fallbacks exist for repair, refresh, and audit scenarios.
+
+## D4. Gitignore Update
+
+Append `.codegraph/` to `.gitignore` unless already present:
+
+```bash
+if [ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore; then
+  :  # already ignored
+else
+  printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore
+fi
+```
+
+The `.codegraph/` directory contains a SQLite database derived deterministically from source files. Committing it would balloon the repo, churn diffs on every edit, and produce merge conflicts on every branch sync. Local-only is the only sensible mode.
+
+If `.gitignore` doesn't exist yet (some repos rely entirely on global gitignore), create one with just the codegraph entry — do NOT generate boilerplate ignores, that's the user's call.
+
+## Phase D Complete: CodeGraph Index
+
+Read `codegraph status --json` for the report numbers. Verified fields (from `src/bin/codegraph.ts`):
+
+| Field | Type | Use |
+|-------|------|-----|
+| `fileCount` | number | Indexed file count |
+| `nodeCount` | number | Total symbol/node count |
+| `edgeCount` | number | Total relationship count |
+| `dbSizeBytes` | number | SQLite DB size on disk |
+| `languages` | string[] | Languages with any indexed files |
+| `pendingChanges` | `{added, modified, removed}` | Counts of files awaiting sync |
+| `backend` | string | SQLite backend (e.g., `node:sqlite`) |
+| `journalMode` | string | `wal` is healthy; anything else means reads can block on writes |
+| `nodesByKind` | object | Breakdown of node kinds (function, class, method, etc.) |
+
+Report format (first-install):
+```
+✅ Phase D complete — CodeGraph index built
+
+**Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
+**Languages:** <languages joined with ", ">
+**Index size:** <dbSizeBytes formatted as MB>
+**Index location:** .codegraph/ (gitignored)
+**MCP config:** .mcp.json · .claude/settings.json · .claude/CLAUDE.md
+
+Try it: in any Claude Code session in this repo, ask "where is <Symbol> defined?" or "what calls <Symbol>?" — Claude answers from the index in one MCP call instead of running grep.
+```
+
+Report format (audit mode — all four signals already present):
+```
+✅ Phase D audit — CodeGraph already wired
+
+**Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
+**Pending sync:** <pendingChanges.added + modified + removed> files (refreshed via `codegraph sync` during audit)
+**MCP config:** all entries current — no changes
+```
+
+If `journalMode != "wal"`, append a warning line: `⚠ Journal mode is "<journalMode>" — reads may block on writes; this filesystem (network mount, WSL2 /mnt) doesn't support WAL.`
+
+If `pendingChanges.added + modified + removed > 0` after the audit-mode `codegraph sync`, append a hint: `→ <count> file(s) still pending — run `codegraph sync` again or check the file watcher.`
+
+When Phase D is skipped, emit a single one-line `[d] Skipped — <reason>` and proceed to the helmet wrap-up summary.
+
+## Key Decisions
+
+- **Phase D runs last** — needs Phase A (language detection signal) and is functionally decoupled from B and C. CodeGraph is local developer tooling: no CI involvement, no CLAUDE.md generation conflict (HTML-comment markers compose cleanly with Phase C output)
+- **Local MCP scope, never global** — Per-repo opt-in keeps ~5 KB of MCP tool descriptions out of unrelated Claude Code sessions. Phase D MUST NOT write to `~/.claude.json` or `~/.claude/` under any flag combination
+- **Auto-allow the query surface, not source-bulk** — Pre-permits the seven query/navigation tools (`search`, `context`, `callers`, `callees`, `impact`, `node`, `status`). Two of them (`node`, `context`) optionally surface source snippets via `includeCode=true`; not a hard read-only gate, but matches what routine "where is X" queries actually need. The two bulk tools (`explore` for verbatim source across symbols, `files` for the project file tree) are not pre-allowed and prompt on first use
+- **Fail-soft** — Phase D never blocks Phase A/B/C value. If codegraph is missing, fails, or skipped, helmet still ships test infra + CI/CD + CLAUDE.md cleanly
+- **No auto-install of the CLI** — `curl … install.sh | sh` is a one-time decision the user consents to. Auto-installing would surprise users with `~/.codegraph/` and `~/.local/bin/codegraph` files they didn't expect
+- **`.codegraph/` is gitignored, not committed** — The index is derived deterministically from source; committing it inflates the repo and produces merge conflicts on every edit
+- **Idempotent by design** — Codegraph's installer uses deep-equal JSON checks and marker-delimited section replacement. Re-running Phase D on a fully-configured repo is a safe no-op that surfaces the current index status
+- **Standalone invocable** — Phase D can run independently of A/B/C for repos that already have everything except a CodeGraph index
