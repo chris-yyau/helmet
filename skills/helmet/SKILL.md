@@ -4156,7 +4156,7 @@ Read `codegraph status --json` for the report numbers. Verified fields (from `sr
 | `dbSizeBytes` | number | SQLite DB size on disk |
 | `languages` | string[] | Languages with any indexed files |
 | `pendingChanges` | `{added, modified, removed}` | Counts of files awaiting sync |
-| `backend` | string | SQLite backend (e.g., `node:sqlite`) |
+| `backend` | string | SQLite backend (e.g., `node-sqlite`) |
 | `journalMode` | string | `wal` is healthy; anything else means reads can block on writes |
 | `nodesByKind` | object | Breakdown of node kinds (function, class, method, etc.) |
 
