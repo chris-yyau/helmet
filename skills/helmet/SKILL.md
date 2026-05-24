@@ -4057,13 +4057,13 @@ Already have Node? `npm install -g @colbymchenry/codegraph` works on any version
 
 Do NOT auto-install the codegraph CLI on the user's behalf. The standalone installer drops files into `~/.codegraph/` and `~/.local/bin/`, which is a deliberate one-time decision the user should consent to.
 
-## D1. Capture Pre-Run Signals (For Reporting Only)
+## D1. Capture Pre-Run Signals
 
-Capture the pre-run state of four signals — used only to distinguish "first install" from "audit re-run" in the completion report. **Phase D's runtime path does NOT branch on these signals**: the codegraph installer is fully idempotent (deep-equal JSON checks, marker-delimited section replacement, and early-return when `.codegraph/` already exists per `src/installer/index.ts`'s `initializeLocalProject`), and the git-sync-hooks fallback uses `isSyncHookInstalled` to avoid re-installing hooks on every run. So one command path handles every state correctly.
+Capture the pre-run state of four signals before D2 mutates the repo. Signals serve two purposes: (1) gate the conditional `codegraph sync` followup in D2 (only fires on a re-run when `.codegraph/` already existed); (2) drive the completion report's shape (first-install vs re-run) and per-file annotations. **The `codegraph install` command itself does NOT branch on these signals** — the installer is fully idempotent (deep-equal JSON checks, marker-delimited section replacement, and early-return when `.codegraph/` already exists per `src/installer/index.ts`'s `initializeLocalProject`), and the git-sync-hooks fallback uses `isSyncHookInstalled` to avoid re-installing hooks. So a single `codegraph install --yes` call handles every signal state correctly; the only real branching is the one-line conditional sync inside the combined block.
 
 | Signal | Detection | Means |
 |--------|-----------|-------|
-| 1. MCP entry | `./.mcp.json` exists with `mcpServers.codegraph` key | MCP server already wired |
+| 1. MCP entry | `./.mcp.json` exists with a `mcpServers.codegraph` object (the installer always writes the standard Claude Code shape: `{ "mcpServers": { "codegraph": { type, command, args } } }`) | MCP server already wired |
 | 2. Permissions | `./.claude/settings.json` has any `mcp__codegraph__*` permission | Auto-allow already wired |
 | 3. Instructions | `./.claude/CLAUDE.md` contains `<!-- CODEGRAPH_START -->` marker | CLAUDE.md block already present |
 | 4. Index | `./.codegraph/` directory exists | SQLite index already built |
@@ -4090,7 +4090,9 @@ Run D1's signal capture, D2's install command, D2's auto-followup sync (conditio
 set -e  # fail-fast for the critical install step; sync/status/gitignore failures are downgraded individually so the completion report can still emit
 
 # D1: capture pre-run signals (must precede every codegraph mutation)
-SIGNAL_MCP=$([ -f .mcp.json ] && grep -q '"codegraph"' .mcp.json && echo T || echo F)
+# SIGNAL_MCP uses 'mcpServers.codegraph' presence (not just "codegraph" substring)
+# to avoid false-positives from legacy keys like "codegraph_old_config"
+SIGNAL_MCP=$([ -f .mcp.json ] && grep -Eq '"mcpServers"[[:space:]]*:[[:space:]]*\{[^}]*"codegraph"[[:space:]]*:' .mcp.json && echo T || echo F)
 SIGNAL_SETTINGS=$([ -f .claude/settings.json ] && grep -q 'mcp__codegraph__' .claude/settings.json && echo T || echo F)
 SIGNAL_CLAUDE_MD=$([ -f .claude/CLAUDE.md ] && grep -qF '<!-- CODEGRAPH_START -->' .claude/CLAUDE.md && echo T || echo F)
 SIGNAL_CODEGRAPH_DIR=$([ -d .codegraph ] && echo T || echo F)
@@ -4113,19 +4115,28 @@ if [ "$SIGNAL_CODEGRAPH_DIR" = "T" ]; then
   codegraph sync || printf 'PHASE_D_SYNC_FAILED=1\n'
 fi
 
-# D4 (gitignore append) — non-fatal: read-only FS or permission error shouldn't
-# block the status report. Idempotent; safe to retry manually.
-if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then
+# D4 (gitignore append) — non-fatal; idempotent across common variants.
+# The grep covers: literal '.codegraph/', no trailing slash ('.codegraph'),
+# leading slash ('/.codegraph/'), trailing whitespace, and inline comments
+# (`.codegraph/  # local index`). Prevents duplicate appends on re-runs.
+if ! ( [ -f .gitignore ] && grep -Eq '^[[:space:]]*/?\.codegraph/?([[:space:]]|#|$)' .gitignore ); then
   printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore || printf 'PHASE_D_GITIGNORE_FAILED=1\n'
 fi
 
-# Status read — bracketed with sentinels so the caller can extract the JSON
-# deterministically even if codegraph emits stderr-warnings or status emits
-# pretty-printed multi-line JSON. Non-fatal: status failure (DB locked by
-# concurrent watcher write, etc.) shouldn't crash Phase D — the caller falls
-# back to a "status unavailable" report variant.
+# Status read — captured to a tempfile FIRST so a codegraph crash mid-write
+# can't produce truncated JSON concatenated with the error sentinel. Only
+# after a clean exit do we emit the JSON inside the BEGIN/END sentinels.
+# Non-fatal: status failure (DB locked by concurrent watcher write, codegraph
+# crash, etc.) shouldn't crash Phase D — the caller falls back to a "status
+# unavailable" report variant via the error sentinel.
+CG_STATUS_TMP=$(mktemp -t cg-status.XXXXXX)
+trap 'rm -f "$CG_STATUS_TMP"' EXIT
 printf 'PHASE_D_STATUS_BEGIN\n'
-codegraph status --json 2>/dev/null || printf '{"error":"status read failed"}'
+if codegraph status --json > "$CG_STATUS_TMP" 2>/dev/null; then
+  cat "$CG_STATUS_TMP"
+else
+  printf '{"error":"status read failed"}'
+fi
 printf '\nPHASE_D_STATUS_END\n'
 ```
 
@@ -4160,7 +4171,7 @@ With `--location local --yes`, this single command does ALL of the following (ve
 
 | File | Purpose | Idempotent behavior |
 |------|---------|---------------------|
-| `./.mcp.json` | MCP server entry: `{ codegraph: { type: "stdio", command: "codegraph", args: ["serve", "--mcp"] } }` | Deep-equal check — no rewrite if identical |
+| `./.mcp.json` | Standard Claude Code MCP config: `{ "mcpServers": { "codegraph": { "type": "stdio", "command": "codegraph", "args": ["serve", "--mcp"] } } }` (the `codegraph` key lives inside the top-level `mcpServers` object, matching Claude Code's expected schema) | Deep-equal check — no rewrite if identical |
 | `./.claude/settings.json` | Seven `mcp__codegraph__*` allowlist entries (`codegraph_search`, `codegraph_context`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_node`, `codegraph_status`) | Merges with existing permissions; preserves unrelated keys |
 | `./.claude/CLAUDE.md` | Instruction block between `<!-- CODEGRAPH_START -->` and `<!-- CODEGRAPH_END -->` markers (~1.6 KB) explaining when Claude Code should prefer codegraph tools over native grep/Read | Marker-delimited section replacement — preserves all other CLAUDE.md content verbatim |
 | `./.codegraph/` | SQLite database of parsed symbols + edges (gitignored — see D4) | First-build on fresh repo; later runs detect existing init and skip re-initialization |
