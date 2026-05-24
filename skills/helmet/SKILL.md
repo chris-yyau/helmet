@@ -4068,7 +4068,12 @@ Capture the pre-run state of four signals — used only to distinguish "first in
 | 3. Instructions | `./.claude/CLAUDE.md` contains `<!-- CODEGRAPH_START -->` marker | CLAUDE.md block already present |
 | 4. Index | `./.codegraph/` directory exists | SQLite index already built |
 
-Record these to a local map (e.g., `PRE_RUN_SIGNALS={mcp:T/F, settings:T/F, claude_md:T/F, codegraph_dir:T/F}`). These will drive the report shape in "Phase D Complete" (first-install vs audit-re-run vs partial-repair), nothing else.
+**Capture must happen BEFORE D2 runs AND in the same Bash invocation as D2 + sync.** Two reasons:
+
+1. D2 creates `.codegraph/` and writes the three config files, so re-checking afterward always returns T and defeats the audit guard.
+2. Claude Code's Bash tool spawns a fresh process per call — shell variables (`SIGNAL_*`) do NOT persist across separate Bash invocations. D1, D2, the conditional sync, D4, and the status read must therefore run as **one combined Bash call**.
+
+See the combined snippet in D2 below — D1 lives at the top of that snippet, NOT as a separate Bash call. The four variables flow through one shell session and are referenced by D2's auto-followup sync conditional and by the "Phase D Complete" report-shape selector (first-install when all four were F vs re-run when any were T).
 
 **Why the signals do not gate commands:**
 
@@ -4079,7 +4084,40 @@ Record these to a local map (e.g., `PRE_RUN_SIGNALS={mcp:T/F, settings:T/F, clau
 
 ## D2. Install + Initialize + Index (Unified)
 
-Run the codegraph installer non-interactively, scoped to **this repo only**:
+Run D1's signal capture, D2's install command, D2's auto-followup sync (conditional), D4's gitignore append, and the final status read as a **single combined Bash invocation** — Claude Code's Bash tool spawns a fresh process per call, so the `SIGNAL_*` variables MUST stay in the same shell session:
+
+```bash
+set -e  # fail-fast: any failed step aborts the rest (codegraph install error, sync failure, etc.)
+
+# D1: capture pre-run signals (must precede every codegraph mutation)
+SIGNAL_MCP=$([ -f .mcp.json ] && grep -q '"codegraph"' .mcp.json && echo T || echo F)
+SIGNAL_SETTINGS=$([ -f .claude/settings.json ] && grep -q 'mcp__codegraph__' .claude/settings.json && echo T || echo F)
+SIGNAL_CLAUDE_MD=$([ -f .claude/CLAUDE.md ] && grep -qF '<!-- CODEGRAPH_START -->' .claude/CLAUDE.md && echo T || echo F)
+SIGNAL_CODEGRAPH_DIR=$([ -d .codegraph ] && echo T || echo F)
+
+# Emit signals to stdout BEFORE D2 mutates state — the caller parses these out
+# of the combined output to choose report shape and per-file annotations
+printf 'PHASE_D_SIGNAL SIGNAL_MCP=%s SIGNAL_SETTINGS=%s SIGNAL_CLAUDE_MD=%s SIGNAL_CODEGRAPH_DIR=%s\n' \
+  "$SIGNAL_MCP" "$SIGNAL_SETTINGS" "$SIGNAL_CLAUDE_MD" "$SIGNAL_CODEGRAPH_DIR"
+
+# D2: idempotent install + initialize + index (works for every signal state)
+codegraph install --target claude --location local --yes
+
+# D2 auto-followup: catch watcher-missed drift only on a re-run
+if [ "$SIGNAL_CODEGRAPH_DIR" = "T" ]; then codegraph sync; fi
+
+# D4: gitignore append (idempotent — see D4 for the standalone form)
+if ! ([ -f .gitignore ] && grep -Fxq '.codegraph/' .gitignore); then
+  printf '\n# CodeGraph local index (regenerable from source — never commit)\n.codegraph/\n' >> .gitignore
+fi
+
+# Status read for the completion report (parsed from stdout alongside signals)
+codegraph status --json
+```
+
+**Reading signals back after the Bash call returns:** Claude parses the `PHASE_D_SIGNAL ...` line from the combined stdout (it's the first output line, distinctive prefix). Those four values then drive the "Phase D Complete" report shape (first-install vs re-run) and the per-file annotations ("already current" vs "created"). Shell variables themselves do not survive the Bash call's exit — the stdout-emission is the only persistence channel.
+
+Use the combined block above as Phase D's primary action. The standalone command shown below is for human reference and documentation only — it omits D1's signal capture, the conditional sync, and the gitignore step.
 
 ```bash
 codegraph install --target claude --location local --yes
@@ -4122,13 +4160,13 @@ Stream the codegraph output so the user can see progress on large repos. Do NOT 
 
 **Auto-followup sync (only when D1's signal 4 was T pre-run):**
 
-If `PRE_RUN_SIGNALS.codegraph_dir` was T before D2 ran (re-run / audit scenario), follow D2 with:
+If `$SIGNAL_CODEGRAPH_DIR == T` (captured in D1 before D2 ran — re-run / audit scenario), follow D2 with:
 
 ```bash
 codegraph sync
 ```
 
-This catches drift the file watcher may have missed (codegraph daemon wasn't running during a batch rename, network-mount filesystem, `CODEGRAPH_NO_WATCH=1`). On a fresh first-install (signal 4 was F), **skip this step** — the install command's internal `cg.indexAll()` is the initial build and `codegraph sync` would be redundant.
+This catches drift the file watcher may have missed (codegraph daemon wasn't running during a batch rename, network-mount filesystem, `CODEGRAPH_NO_WATCH=1`). On a fresh first-install (`$SIGNAL_CODEGRAPH_DIR == F` pre-run), **skip this step** — the install command's internal `cg.indexAll()` is the initial build and `codegraph sync` would be redundant.
 
 ## D3. Manual Override Commands
 
@@ -4187,14 +4225,19 @@ Report format (first-install):
 Try it: in any Claude Code session in this repo, ask "where is <Symbol> defined?" or "what calls <Symbol>?" — Claude answers from the index in one MCP call instead of running grep.
 ```
 
-Report format (audit mode — all four signals already present):
+Report format (re-run — any of the four `SIGNAL_*` variables was T pre-D2):
 ```
-✅ Phase D audit — CodeGraph already wired
+✅ Phase D re-run — CodeGraph wiring refreshed
 
 **Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
-**Pending sync:** <pendingChanges.added + modified + removed> files (refreshed via `codegraph sync` during audit)
-**MCP config:** all entries current — no changes
+**Pending sync:** <pendingChanges.added + modified + removed> files
+  (only include this line when `$SIGNAL_CODEGRAPH_DIR` was T pre-D2 — post-install `codegraph sync` ran)
+**MCP config:**
+  - .mcp.json — <"already current" when $SIGNAL_MCP=T; "created" when $SIGNAL_MCP=F>
+  - .claude/settings.json — <"already current" when $SIGNAL_SETTINGS=T; "created" when $SIGNAL_SETTINGS=F>
+  - .claude/CLAUDE.md — <"block already present" when $SIGNAL_CLAUDE_MD=T; "block added" when $SIGNAL_CLAUDE_MD=F>
 ```
+Always list all three MCP-config files (newly created ones are part of the wiring, not omitted). The annotation distinguishes "this was already wired before Phase D ran" from "Phase D just created this."
 
 If `journalMode != "wal"`, append a warning line: `⚠ Journal mode is "<journalMode>" — reads may block on writes; this filesystem (network mount, WSL2 /mnt) doesn't support WAL.`
 
@@ -4204,7 +4247,7 @@ When Phase D is skipped, emit a single one-line `[d] Skipped — <reason>` and p
 
 ## Key Decisions
 
-- **Phase D runs last** — needs Phase A (language detection signal) and is functionally decoupled from B and C. CodeGraph is local developer tooling: no CI involvement, no CLAUDE.md generation conflict (HTML-comment markers compose cleanly with Phase C output)
+- **Phase D runs last** — reuses Phase A's language detection when chained in the same helmet run; runs its own D0 detection when invoked standalone. Functionally decoupled from B and C: no CI involvement, no CLAUDE.md generation conflict (HTML-comment markers compose cleanly with Phase C output)
 - **Local MCP scope, never global** — Per-repo opt-in keeps ~5 KB of MCP tool descriptions out of unrelated Claude Code sessions. Phase D MUST NOT write to `~/.claude.json` or `~/.claude/` under any flag combination
 - **Auto-allow the query surface, not source-bulk** — Pre-permits the seven query/navigation tools (`search`, `context`, `callers`, `callees`, `impact`, `node`, `status`). Two of them (`node`, `context`) optionally surface source snippets via `includeCode=true`; not a hard read-only gate, but matches what routine "where is X" queries actually need. The two bulk tools (`explore` for verbatim source across symbols, `files` for the project file tree) are not pre-allowed and prompt on first use
 - **Fail-soft** — Phase D never blocks Phase A/B/C value. If codegraph is missing, fails, or skipped, helmet still ships test infra + CI/CD + CLAUDE.md cleanly
