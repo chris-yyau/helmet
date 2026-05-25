@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/chris-yyau/helmet/compare/v1.20.0...v1.20.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **scorecard:** remove top-level defaults block + skill audit exemption ([#45](https://github.com/chris-yyau/helmet/issues/45)) ([9db0533](https://github.com/chris-yyau/helmet/commit/9db05338bfb23f35eed95fe9ca6d5df077eb701d))
+
 # [1.20.0](https://github.com/chris-yyau/helmet/compare/v1.19.2...v1.20.0) (2026-05-24)
 
 
