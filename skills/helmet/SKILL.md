@@ -2414,6 +2414,7 @@ on:
 jobs:
   scorecard:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       id-token: write
       contents: read
@@ -2423,21 +2424,21 @@ jobs:
       pull-requests: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
         with:
           egress-policy: audit
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Run Scorecard
-        uses: ossf/scorecard-action@99c09fe975337306107572b4fdf4db224cf8e2f2 # v2.4.3
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
-          publish_results: false
+          publish_results: false  # CHANGEME: flip to `true` only on a public repo. This input publishes signed results to the public OSSF scorecard.dev / api.scorecard.dev database (distinct from the private-repo SARIF upload path, which is documented separately). Private repos should leave this `false` regardless of GHAS. See "When going public checklist" below.
           repo_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload results as artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: scorecard-results
           path: results.sarif
@@ -3817,7 +3818,7 @@ done
 - **`pip install` over GitHub Actions for semgrep/checkov/zizmor** — avoids additional action SHAs to maintain; pip install is reliable on ubuntu runners; pinact/Dependabot only track actions, not pip packages — accepted tradeoff for simplicity
 - **semgrep `p/security-audit` ruleset in CI** — matches seatbelt's default for consistency. `--error` flag fails on any finding. `--exclude tests` avoids false positives on test fixtures with intentional bad patterns
 - **GitGuardian covers secrets in CI, so no gitleaks CI job** — GitGuardian GitHub App runs on every push/PR with a different engine. Two-layer secrets detection: gitleaks (local/seatbelt) + GitGuardian (CI). No need for a third layer
-- **Workflow hardening patterns mandatory on all workflows (added 2026-03-27)** — `paths-ignore` (skip docs), `concurrency` (cancel stale), `permissions` (top-level least-privilege), `defaults.run.shell: bash` (explicit), `timeout-minutes` (every job). Security workflow uses `paths` (positive match) instead of `paths-ignore`
+- **Workflow hardening patterns mandatory on all workflows (added 2026-03-27)** — `paths-ignore` (skip docs), `concurrency` (cancel stale), `permissions` (top-level least-privilege), `defaults.run.shell: bash` (explicit), `timeout-minutes` (every job). Security workflow uses `paths` (positive match) instead of `paths-ignore`. **`scorecard.yml` MUST NOT declare top-level `defaults:` or `env:` blocks** — `ossf/scorecard-action`'s publish verification rejects them with `workflow contains global env vars or defaults` (HTTP 400), failing the job even though scoring succeeds. The B0 audit table's `defaults.run.shell: bash` rule explicitly carves out this file; do not "fix" the missing `defaults:` block on scorecard.yml. Ref: https://github.com/ossf/scorecard-action#workflow-restrictions
 - **`pull_request` over `pull_request_target`** — never run untrusted PR code with write permissions. All workflows use `pull_request`
 - **External `check-pinned-uses.sh` over inline grep** — handles quoted `uses:` values, reusable across repos, easier to test. Deploy to `.github/scripts/`. Exempt local refs (`./`) and `docker://`
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
