@@ -1397,7 +1397,7 @@ For each `.github/workflows/*.yml`, verify:
 |-------|--------------|
 | `timeout-minutes` on every job | For each workflow, verify every job has `timeout-minutes` set |
 | `permissions` declared | `grep -L 'permissions' .github/workflows/*.yml` — should return nothing |
-| `defaults.run.shell` | Check `defaults.run.shell: bash` is declared (not just any `shell:` key in step-level overrides) |
+| `defaults.run.shell` | Check `defaults.run.shell: bash` is declared (not just any `shell:` key in step-level overrides). **EXCEPTION:** `scorecard.yml` must NOT declare top-level `defaults:` or `env:` — `ossf/scorecard-action` publish verification rejects workflows containing them with `workflow contains global env vars or defaults` (see https://github.com/ossf/scorecard-action#workflow-restrictions) |
 | Concurrency group | Every push/PR-triggered workflow must declare a `concurrency:` block (cron-only workflows like scorecard.yml are exempt). Cancellable workflows (cancel-in-progress: true) must use the canonical group: `${{ github.workflow }}-${{ github.event.pull_request.number \|\| github.ref }}` so two different workflows can't accidentally share a group. Non-cancellable workflows (release.yml, bypass-audit.yml) must use `cancel-in-progress: false` AND a commit/sha/ref-keyed group that won't collapse independent runs. Quick lint: `grep -L '^concurrency:' .github/workflows/*.yml` should return only cron-only files |
 | Harden-Runner | For each ubuntu job (not macOS), verify `harden-runner` step exists. Check per-job, not per-file |
 | SHA-pinned actions | `bash .github/scripts/check-pinned-uses.sh` — exit 0 = pass |
@@ -2401,6 +2401,10 @@ For non-Node repos (Go, Rust, Python, Swift), create a minimal root `package.jso
 **Workflow** (`.github/workflows/scorecard.yml`):
 
 ```yaml
+# NOTE: scorecard-action publish verification rejects workflows containing
+# any top-level `env:` or `defaults:` block. The B0 audit rule that requires
+# `defaults.run.shell: bash` elsewhere explicitly exempts this file.
+# https://github.com/ossf/scorecard-action#workflow-restrictions
 name: OpenSSF Scorecard
 
 on:
@@ -2441,6 +2445,7 @@ jobs:
 ```
 
 **Key points:**
+- **NEVER** add top-level `env:` or `defaults:` blocks — `scorecard-action`'s publish-verification step rejects them (`workflow contains global env vars or defaults`). Job fails even though scoring succeeds. The B0 audit's `defaults.run.shell: bash` rule explicitly exempts this file. See https://github.com/ossf/scorecard-action#workflow-restrictions
 - `publish_results: false` for private repos (API rejects private repos). Flip to `true` when going public.
 - `repo_token` must be explicit — Scorecard's GraphQL queries fail with "Resource not accessible by integration" without it
 - Job-level permissions include `issues`, `checks`, `pull-requests` read — Scorecard checks these for its 18 scoring categories
