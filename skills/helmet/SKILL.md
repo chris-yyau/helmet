@@ -2796,7 +2796,7 @@ jobs:
 - **Idempotent under re-runs**: Dependabot rebases trigger workflow re-runs on the same PR. (1) `gh pr merge --auto --squash` pattern-matches its stderr — only the "already enabled" idempotency string is tolerated; all other failures (auth, rate limit, branch protection misconfig) abort the step. (2) The comment step uses the canonical fail-closed dedup pattern (capture-then-test, explicit grep status via `case`) — same shape as `security.yml`'s `changes` detector. Transient `gh pr view` failures surface as `::warning::` rather than silently re-commenting
 
 **SHA verification:**
-- `step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450` → v2.19.1
+- `step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5` → v2.19.3
 - `dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98` → v3.1.0
 - `hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363` → v4.0.0
 
