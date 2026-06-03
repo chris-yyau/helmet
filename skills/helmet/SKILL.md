@@ -4064,7 +4064,7 @@ Already have Node? `npm install -g @colbymchenry/codegraph` works on any version
 Do NOT auto-install the codegraph CLI on the user's behalf. The standalone installer drops files into `~/.codegraph/` and `~/.local/bin/`, which is a deliberate one-time decision the user should consent to.
 
 **One-time agent wiring (prerequisite — NOT run by Phase D):** Phase D builds the index but does not register codegraph with your agents. Once per machine, wire every installed agent so each can query any repo's index:
-```
+```bash
 codegraph install --target auto --location global --yes
 ```
 `--target auto` detects and wires each installed agent (claude, cursor, codex, opencode, hermes, gemini, antigravity, kiro); `--location global` registers once for all repos. It's idempotent and machine-global — do it once, not per repo. Helmet does NOT run this automatically: it writes to your agents' global configs (`~/.claude.json`, `~/.codex/config.toml`, …), a deliberate one-time decision. If the index is built but wiring was skipped, the index exists but no agent can query it — Phase D's completion report (both first-install and re-run shapes) prints a reminder.
@@ -4095,7 +4095,7 @@ See the combined snippet in D2 below — D1 lives at the top of that snippet, NO
 Run D1's signal capture, the per-repo index build (init or sync), D4's gitignore append, and the final status read as a **single combined Bash invocation** — Claude Code's Bash tool spawns a fresh process per call, so the `SIGNAL_*` variable MUST stay in the same shell session. Phase D does NOT wire agents — that's a one-time `codegraph install` prerequisite (see D0); Phase D only builds this repo's index.
 
 ```bash
-set -e  # guards the unguarded helpers (signal capture, status tempfile); the index build, gitignore, and status read are each downgraded individually so the completion report still emits
+set -e  # backstops the few genuinely unguarded commands (notably the mktemp for the status tempfile — the SIGNAL_INDEX_DB assignment always exits 0 via `|| echo F`, so set -e never fires there); the index build, gitignore append, and status read are each downgraded with `|| printf ...` so a failure there still lets the completion report emit
 
 # D1: capture the one pre-run signal (must precede the index step). Check the
 # index DB file, NOT just the .codegraph/ dir — an interrupted prior run can
@@ -4149,7 +4149,7 @@ printf '\nPHASE_D_STATUS_END\n'
 
 1. `PHASE_D_SIGNAL SIGNAL_INDEX_DB=...` — the first output line, fixed prefix. Drives report-shape (first-install when F, re-run when T).
 2. Between `PHASE_D_STATUS_BEGIN` and `PHASE_D_STATUS_END` sentinels — the `codegraph status --json` payload (or `{"error":...}` fallback on failure).
-3. Optional fault flags: `PHASE_D_SYNC_FAILED=1` (the re-run `codegraph sync` failed; status counts reflect the pre-run index state and may be stale until the user manually re-runs `codegraph sync`); `PHASE_D_INDEX_FAILED=1` (the fresh `codegraph init` failed; no usable index was built — report the stderr and tell the user to re-run `codegraph init`); `PHASE_D_GITIGNORE_FAILED=1` (gitignore append failed; user must add `.codegraph/` manually).
+3. Optional fault flags: `PHASE_D_SYNC_FAILED=1` (the re-run `codegraph sync` failed; status counts reflect the pre-run index state and may be stale until the user manually re-runs `codegraph sync`); `PHASE_D_INDEX_FAILED=1` (the fresh `codegraph init` failed; no usable index was built — the failing command's stderr appears in the raw Bash output alongside the fault flag, not in a structured stdout region; surface it and tell the user to re-run `codegraph init`); `PHASE_D_GITIGNORE_FAILED=1` (gitignore append failed; user must add `.codegraph/` manually).
 
 Shell variables themselves do not survive the Bash call's exit — the stdout-emission is the only persistence channel.
 
@@ -4242,7 +4242,7 @@ Read `codegraph status --json` for the report numbers. Verified fields (from `sr
 | `nodesByKind` | object | Breakdown of node kinds (function, class, method, etc.) |
 
 Report format (first-install):
-```
+```text
 ✅ Phase D complete — CodeGraph index built
 
 **Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
@@ -4256,7 +4256,7 @@ Try it: in any agent session in this repo, ask "where is <Symbol> defined?" or "
 (The first-install report always shows the one-time-setup line — Phase D builds the index but does not wire agents, and it has no cheap way to know whether wiring already happened, so it reminds rather than assumes.)
 
 Report format (re-run — parsed `PHASE_D_SIGNAL` showed `SIGNAL_INDEX_DB=T` pre-D2):
-```
+```text
 ✅ Phase D re-run — CodeGraph index refreshed
 
 **Indexed:** <fileCount> files · <nodeCount> nodes · <edgeCount> edges
