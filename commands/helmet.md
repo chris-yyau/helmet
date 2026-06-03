@@ -5,7 +5,7 @@ description: >
   generates a project CLAUDE.md (Phase C), and builds a per-repo CodeGraph index (Phase D).
   Use when onboarding a new repo, setting up tests + CI from scratch, adding Codecov/pinact/SBOM/security scanning,
   auditing pipeline completeness, fixing CI failures, generating/refreshing a project CLAUDE.md,
-  wiring tree-sitter code intelligence, or deploying pipeline changes across multiple repos.
+  building a tree-sitter code intelligence index, or deploying pipeline changes across multiple repos.
 ---
 
 Load and follow the helmet skill to onboard this repository.

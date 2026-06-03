@@ -5,7 +5,7 @@ description: >
   generates a project CLAUDE.md (Phase C), and builds a per-repo CodeGraph index (Phase D).
   Use when onboarding a new repo, setting up tests + CI from scratch, adding Codecov/pinact/SBOM/security scanning,
   auditing pipeline completeness, fixing CI failures, deploying pipeline changes across multiple repos,
-  generating/refreshing a repo's CLAUDE.md, or wiring a tree-sitter code intelligence index.
+  generating/refreshing a repo's CLAUDE.md, or building a tree-sitter code intelligence index.
   Replaces ci-pipeline-setup and test-setup.
 ---
 
@@ -43,7 +43,7 @@ Four-phase repo onboarding: **Phase A** bootstraps test infrastructure (language
 - Onboarding a new repo with code in a codegraph-supported language — auto-runs after Phase C completes when the `codegraph` CLI is on PATH
 - Refreshing the index after a large refactor (codegraph also incrementally re-indexes on file save, so manual refresh is rarely needed)
 - Adding code intelligence to a repo that already has tests + CI + CLAUDE.md but no `.codegraph/` index
-- User asks to build a code graph, wire codegraph, or enable structural code search
+- User asks to build a code graph or enable structural code search (Phase D only builds the index — to *wire* codegraph into agents, surface the D0 one-time prerequisite instead)
 
 ---
 
@@ -4067,7 +4067,7 @@ Do NOT auto-install the codegraph CLI on the user's behalf. The standalone insta
 ```
 codegraph install --target auto --location global --yes
 ```
-`--target auto` detects and wires each installed agent (claude, cursor, codex, opencode, hermes, gemini, antigravity, kiro); `--location global` registers once for all repos. It's idempotent and machine-global — do it once, not per repo. Helmet does NOT run this automatically: it writes to your agents' global configs (`~/.claude.json`, `~/.codex/config.toml`, …), a deliberate one-time decision. If the index is built but wiring was skipped, the index exists but no agent can query it — Phase D's first-install report prints a reminder.
+`--target auto` detects and wires each installed agent (claude, cursor, codex, opencode, hermes, gemini, antigravity, kiro); `--location global` registers once for all repos. It's idempotent and machine-global — do it once, not per repo. Helmet does NOT run this automatically: it writes to your agents' global configs (`~/.claude.json`, `~/.codex/config.toml`, …), a deliberate one-time decision. If the index is built but wiring was skipped, the index exists but no agent can query it — Phase D's completion report (both first-install and re-run shapes) prints a reminder.
 
 ## D1. Capture Pre-Run Signal
 
@@ -4108,7 +4108,7 @@ SIGNAL_INDEX_DB=$([ -f .codegraph/codegraph.db ] && echo T || echo F)
 printf 'PHASE_D_SIGNAL SIGNAL_INDEX_DB=%s\n' "$SIGNAL_INDEX_DB"
 
 # D2: build the per-repo index — Phase D's one job. init on a fresh repo, sync
-# when .codegraph/ already exists. stdin from /dev/null keeps both non-interactive
+# when .codegraph/codegraph.db already exists. stdin from /dev/null keeps both non-interactive
 # even on a filesystem where the watch-fallback would otherwise prompt. Non-fatal:
 # a stale watcher state or DB-lock contention from codegraph's own daemon
 # shouldn't kill the rest of Phase D. The caller detects PHASE_D_SYNC_FAILED /
@@ -4157,7 +4157,7 @@ Use the combined block above as Phase D's primary action. The standalone command
 
 ```bash
 # Phase D's actual action — build this repo's index:
-codegraph init </dev/null                                 # or: codegraph sync, if .codegraph/ already exists
+codegraph init </dev/null                                 # or: codegraph sync, if .codegraph/codegraph.db already exists
 
 # One-time per machine — wire codegraph into your agents (NOT run by Phase D;
 # without it the index builds but no agent can query it). See the D0 prerequisite:
@@ -4214,7 +4214,7 @@ D2's unified block handles every signal state correctly. Reach for the targeted 
 | User scenario | Command | Notes |
 |---------------|---------|-------|
 | "Force rebuild from scratch — the index seems corrupted" | `rm -rf .codegraph && codegraph init </dev/null` | Re-creates the index from source; global agent wiring is untouched |
-| "Just refresh the index, don't touch anything else" | `codegraph sync` | Incremental refresh only; safe to run repeatedly |
+| "Just refresh the index, don't touch anything else" | `codegraph sync </dev/null` | Incremental refresh only; safe to run repeatedly |
 | "Re-wire an agent I just installed" | `codegraph install --target auto --location global --yes` | Idempotent; picks up newly-installed agents, no-ops on already-wired ones |
 
 **`codegraph init` builds the index by default** (the old `-i`/`--index` flag is now a deprecated no-op). It can prompt for the watch-fallback when the file watcher cannot run, so helmet always invokes it with stdin redirected from `/dev/null` to stay non-interactive — keep that redirect on any scripted `init`/`sync`.
@@ -4275,7 +4275,7 @@ When Phase D is skipped, emit a single one-line `[d] Skipped — <reason>` and p
 
 ## Key Decisions
 
-- **Phase D runs last** — reuses Phase A's language detection when chained in the same helmet run; runs its own D0 detection when invoked standalone. Functionally decoupled from B and C: no CI involvement, no CLAUDE.md generation conflict (HTML-comment markers compose cleanly with Phase C output)
+- **Phase D runs last** — reuses Phase A's language detection when chained in the same helmet run; runs its own D0 detection when invoked standalone. Functionally decoupled from B and C: no CI involvement and no CLAUDE.md write — Phase D no longer touches CLAUDE.md
 - **Phase D builds the index only; wiring is a one-time prerequisite** — agent registration (`codegraph install --target auto --location global`) is machine-global and effectively static, so it lives *outside* Phase D — run once per machine, not on every helmet invocation. Phase D's only write is the per-repo `.codegraph/` index (`init`/`sync`); D0 surfaces the one-time install command and the first-install report reminds the user if it hasn't been done. The global install, when run, wires every detected agent (Claude Code, Cursor, Codex, …) via `--target auto`, so each agent — not just Claude Code — can query the index
 - **Auto-allow the query surface, not source-bulk** — Pre-permits the seven query/navigation tools (`search`, `context`, `callers`, `callees`, `impact`, `node`, `status`). Two of them (`node`, `context`) optionally surface source snippets via `includeCode=true`; not a hard read-only gate, but matches what routine "where is X" queries actually need. The two bulk tools (`explore` for verbatim source across symbols, `files` for the project file tree) are not pre-allowed and prompt on first use
 - **Fail-soft** — Phase D never blocks Phase A/B/C value. If codegraph is missing, fails, or skipped, helmet still ships test infra + CI/CD + CLAUDE.md cleanly
