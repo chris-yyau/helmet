@@ -1,3 +1,10 @@
+# [1.21.0](https://github.com/chris-yyau/helmet/compare/v1.20.1...v1.21.0) (2026-06-03)
+
+
+### Features
+
+* **helmet:** make phase d codegraph index-only, wiring is one-time prereq ([#49](https://github.com/chris-yyau/helmet/issues/49)) ([b57a192](https://github.com/chris-yyau/helmet/commit/b57a1923f2f14f756bbbad44b7d5921d1e57a189))
+
 ## [1.20.1](https://github.com/chris-yyau/helmet/compare/v1.20.0...v1.20.1) (2026-05-25)
 
 
