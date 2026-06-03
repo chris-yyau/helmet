@@ -9,7 +9,7 @@
       "name": "helmet",
       "source": "./",
       "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
-      "version": "1.20.1",
+      "version": "1.21.0",
       "author": {
         "name": "Chris Yau"
       },
