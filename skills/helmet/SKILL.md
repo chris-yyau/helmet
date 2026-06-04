@@ -3460,8 +3460,12 @@ Detects commits pushed directly to `main` without a PR — i.e., admin bypasses 
 ```yaml
 name: Admin Bypass Audit
 
-# helmet-pipeline: v<helmet-version>   # ← STAMP the helmet version that generated this
-                                       #    file (drift-detection reads it; see B4)
+# helmet-pipeline: v<pipeline-version>   # ← COPY helmet's OWN canonical bypass-audit.yml
+                                        #    stamp verbatim. This is the pipeline-template
+                                        #    version, bumped ONLY when the template changes —
+                                        #    NOT the plugin version, NOT every release.
+                                        #    check-pipeline-drift.sh reads helmet's canonical
+                                        #    stamp as the source of truth; see ADR-0001.
 
 on:
   push:
