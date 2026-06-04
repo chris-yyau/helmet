@@ -3460,6 +3460,9 @@ Detects commits pushed directly to `main` without a PR — i.e., admin bypasses 
 ```yaml
 name: Admin Bypass Audit
 
+# helmet-pipeline: v<helmet-version>   # ← STAMP the helmet version that generated this
+                                       #    file (drift-detection reads it; see B4)
+
 on:
   push:
     branches: [main]
@@ -3483,7 +3486,7 @@ jobs:
       pull-requests: read  # look up PR for commit SHA
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
       - name: Detect direct-push bypass
@@ -3495,52 +3498,47 @@ jobs:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          set -e
-          # Skip automated actors
+          set -e   # NOT -euo pipefail: pipefail SIGPIPE-fails the head -3 pipe mid-run
+          # IDENTITY-based skip ONLY — automated actors. Do NOT skip on commit-message
+          # content ([skip ci]/chore(release)): that text is attacker-controllable, so a
+          # human bypasser could use it to evade. Bot release commits are skipped here.
           if [[ "$ACTOR" == *"[bot]"* ]] || [[ "$ACTOR" == "github-actions" ]]; then
             echo "Skipping audit — automated actor: $ACTOR"; exit 0
           fi
-          # Skip release commits — `chore(release)` as first-line prefix,
-          # `[skip ci]` anywhere in full commit message.
-          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -1)
-          if [[ "$FIRST_LINE" == "chore(release)"* ]]; then
-            echo "Skipping audit — release commit"; exit 0
-          fi
-          if printf '%s' "$COMMIT_MSG" | grep -qF '[skip ci]'; then
-            echo "Skipping audit — CI-skip marker"; exit 0
-          fi
-          # Look up PRs — distinguish "API OK, no PR" (bypass) from "API failed" (skip).
-          # Never treat gh api failure as bypass — that creates false-positive issues.
+          # Look up PRs. Distinguish "API OK, no PR" (bypass) from "API failed/garbled"
+          # (INDETERMINATE → FAIL the run; never silently skip, never false-positive).
           if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
-            echo "::warning::gh api failed — skipping audit"; exit 0
+            echo "::error::gh api failed for $COMMIT_SHA — failing run (status indeterminate)"; exit 1
           fi
-          PR_COUNT=$(printf '%s' "$PRS_JSON" | jq 'length' 2>/dev/null || echo "0")
-          if [ "$PR_COUNT" != "0" ]; then
-            echo "No bypass — commit came from PR"; exit 0
+          if ! PR_COUNT=$(printf '%s' "$PRS_JSON" | jq -e 'if type=="array" then length else error("not array") end' 2>/dev/null); then
+            echo "::error::unexpected PR-list response — failing run"; exit 1
           fi
+          if [ "$PR_COUNT" != "0" ]; then echo "No bypass — came from PR"; exit 0; fi
           # No PR → direct push = bypass
           echo "::warning::Admin bypass: direct push to main by $ACTOR ($COMMIT_SHA)"
+          # NO dedup on purpose: issue title/body are MUTABLE (anyone with issues:write,
+          # incl. via editing a bot-authored issue) → unsafe as a suppression primitive;
+          # a duplicate on a rare manual re-run is harmless. See ADR-0001.
           gh label create "admin-bypass" --color "d93f0b" \
-            --description "Commit bypassed required status checks" \
-            --repo "$REPO" 2>/dev/null || true
+            --description "Commit bypassed required status checks" --repo "$REPO" 2>/dev/null || true
           # ... (body composition + gh issue create, see full template)
 ```
 
 See `.github/workflows/bypass-audit.yml` in the helmet repo for the full template with issue body composition.
 
 **Detection logic:**
-1. If actor is a bot (contains `[bot]` or equals `github-actions`) → skip
-2. If commit message first line starts with `chore(release)` → skip (conventional commit)
-3. If full commit message contains `[skip ci]` anywhere → skip
-4. Look up PRs associated with commit SHA via `/commits/{sha}/pulls` API
-5. **If `gh api` fails (rate limit, transient error) → log warning, skip** (do NOT create false-positive issue)
-6. If API succeeded and zero associated PRs → direct-push bypass → warn + create issue
-7. Otherwise → commit came from PR → no alert
+1. If actor is a bot (`[bot]` suffix or `github-actions`) → skip. **IDENTITY-based skip only.**
+2. **Do NOT skip on commit-message content** (`[skip ci]` / `chore(release)`): that text is attacker-controllable, so a human bypasser could use it to evade. Legitimate release commits are authored by a bot actor and are already skipped by rule 1.
+3. Look up PRs associated with the commit SHA via `/commits/{sha}/pulls`.
+4. **If `gh api` fails OR returns a non-array → FAIL the run** (`exit 1`, durable red-X in Actions history). Never silently skip, never coerce a garbled response into a false-positive bypass issue.
+5. If API succeeded and zero associated PRs → direct-push bypass → warn + create issue. **No dedup** (see below / ADR-0001).
+6. Otherwise → commit came from PR → no alert.
 
-**Known limitations:**
-- `gh pr merge --admin` DOES associate the merge commit with a PR, so this workflow won't detect that vector. Adding check-runs inspection would catch it but requires `administration: read` which is an elevated permission.
-- Timing: this workflow runs AFTER the push lands, so it's detective control, not preventive. The gate already allowed the push; the audit surfaces it.
-- Automated actors are globally skipped. If a compromised bot were to push directly to main, this workflow would not alert. Acceptable for solo dev; not acceptable for team repos.
+**Known limitations (accepted):**
+- `gh pr merge --admin` associates the merge commit with a PR, so this won't flag admin-merges — that is pr-grind's authorized path, logged to `.claude/bypass-log.jsonl`.
+- A native CI-skip marker (`[skip ci]`, `[skip actions]`, …) in the head commit suppresses the whole workflow run. **Not an audit gap:** for org-owned repos the **GitHub org audit log** (`protected_branch.policy_override` events) is the authoritative, tamper-proof trail — this workflow is a convenience layer. A post-hoc "sweep" was evaluated and rejected (a workflow can't distinguish legitimate automation from a forged bypass after the fact).
+- Detective, not preventive: runs after the push lands.
+- **No dedup.** Issue title/body are mutable (anyone with `issues:write` can pre-create or edit a matching issue — even an author filter is defeated by editing a bot-authored issue), so a title/SHA dedup is an insider-editable suppression primitive. A duplicate issue on a rare manual re-run is the safer trade. See ADR-0001.
 
 **Key points:**
 - **Creates a permanent audit trail** — GitHub Issues are durable, searchable, and trigger notifications. Step-summary-only alerts get forgotten.
