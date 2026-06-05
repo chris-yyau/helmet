@@ -64,7 +64,7 @@ exactly this reason.
 - All push-time repos converge on one design; new onboards are born on it and stamped.
 - Drift is now detectable on demand (and via a scheduled scan); re-sync is a manual
   re-onboard when the check flags a repo (acceptable for a vendored model).
-- `diveanddev.com` needs no change — it *is* the reference.
+- `diveanddev.com` originated this design but is no longer exempt: as of v1.21.2 it adopted the hardened canonical workflow like the rest of the fleet, so it is now a stamped, drift-scanned member (not an unstamped reference).
 
 ## Revisit trigger
 
