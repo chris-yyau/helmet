@@ -151,7 +151,7 @@ jobs:
             --color "d93f0b" \
             --description "Commit bypassed required status checks" \
             --repo "$REPO" 2>/dev/null \
-            || gh label list --repo "$REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx "admin-bypass" \
+            || gh api "repos/$REPO/labels/admin-bypass" --jq '.name' 2>/dev/null | grep -qx "admin-bypass" \
             || LABEL_OK=0
 
           # Compose issue body in a file — values from env vars, properly quoted.
