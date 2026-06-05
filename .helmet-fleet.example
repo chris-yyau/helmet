@@ -1,0 +1,19 @@
+# helmet fleet list — repos to scan for pipeline drift.
+# Copy to `.helmet-fleet` (gitignored) and edit. One `owner/repo` per line; # comments OK.
+# Used by: scripts/check-pipeline-drift.sh --fleet
+#
+# List ONLY push-time repos that carry the canonical `# helmet-pipeline: vX.Y.Z` stamp.
+# The drift check exits non-zero on any unstamped/behind repo, so do NOT list repos that
+# are intentionally off the push-time standard — they would false-positive forever:
+#   • Dive-And-Dev/diveanddev.com — the hand-authored REFERENCE design; carries no helmet
+#     stamp by design (ADR-0001 — it needs no change). It IS the standard, not measured against it.
+#   • chris-yyau/seatbelt — a scheduled-SWEEP variant (cron + dedup), a documented exception
+#     (ADR-0001); structurally divergent from the push-time standard, so it is not scanned here.
+#
+# Example (stamp-bearing push-time repos):
+# chris-yyau/busdriver
+# chris-yyau/helmet
+# Dive-And-Dev/perch
+# Dive-And-Dev/chrisyau.me
+# Dive-And-Dev/jikdak
+# Dive-And-Dev/growth-engine
