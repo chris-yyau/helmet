@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/chris-yyau/helmet/compare/v1.21.0...v1.22.0) (2026-06-05)
+
+
+### Features
+
+* **ci:** canonical bypass-audit standard + pipeline drift detection ([#51](https://github.com/chris-yyau/helmet/issues/51)) ([cd8b160](https://github.com/chris-yyau/helmet/commit/cd8b160bc6d308c00252c9423416f7474a80901b))
+
 # [1.21.0](https://github.com/chris-yyau/helmet/compare/v1.20.1...v1.21.0) (2026-06-03)
 
 
