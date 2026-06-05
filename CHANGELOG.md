@@ -1,3 +1,10 @@
+## [1.22.1](https://github.com/chris-yyau/helmet/compare/v1.22.0...v1.22.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **ci:** backport canonical bypass-audit v1.21.2 hardening ([#52](https://github.com/chris-yyau/helmet/issues/52)) ([43b73aa](https://github.com/chris-yyau/helmet/commit/43b73aa5df48e0bc58fdc50a76670e91d7b6db91))
+
 # [1.22.0](https://github.com/chris-yyau/helmet/compare/v1.21.0...v1.22.0) (2026-06-05)
 
 
