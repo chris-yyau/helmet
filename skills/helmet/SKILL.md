@@ -3461,11 +3461,12 @@ Detects commits pushed directly to `main` without a PR — i.e., admin bypasses 
 name: Admin Bypass Audit
 
 # helmet-pipeline: v<pipeline-version>   # ← COPY helmet's OWN canonical bypass-audit.yml
-                                        #    stamp verbatim. This is the pipeline-template
-                                        #    version, bumped ONLY when the template changes —
-                                        #    NOT the plugin version, NOT every release.
-                                        #    check-pipeline-drift.sh reads helmet's canonical
-                                        #    stamp as the source of truth; see ADR-0001.
+                                        #    VERBATIM. This excerpt is ILLUSTRATIVE — the file
+                                        #    in helmet's repo is the source of truth (it is not
+                                        #    drift-checked here). Bump the stamp ONLY when the
+                                        #    template changes — NOT the plugin version, NOT every
+                                        #    release. check-pipeline-drift.sh reads helmet's
+                                        #    canonical stamp as truth; see ADR-0001.
 
 on:
   push:
@@ -3484,8 +3485,9 @@ defaults:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 10
     permissions:
+      contents: read       # required by /commits/{sha}/pulls on PRIVATE repos
       issues: write        # create audit issues
       pull-requests: read  # look up PR for commit SHA
     steps:
@@ -3496,47 +3498,80 @@ jobs:
       - name: Detect direct-push bypass
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMMIT_SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
           REPO: ${{ github.repository }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
           RUN_ID: ${{ github.run_id }}
+          HEAD_SHA: ${{ github.sha }}
+          # Do NOT pass toJSON(github.event.commits) via env — a large push (up to 2048
+          # commits, each with message + file lists + URLs) can exceed the runner's
+          # env/ARG_MAX limit and make the step fail to exec before any audit logic runs,
+          # silently suppressing the bypass. Read from $GITHUB_EVENT_PATH (below) instead.
         run: |
-          set -e   # NOT -euo pipefail: pipefail SIGPIPE-fails the head -3 pipe mid-run
-          # IDENTITY-based skip ONLY — automated actors. Do NOT skip on commit-message
-          # content ([skip ci]/chore(release)): that text is attacker-controllable, so a
-          # human bypasser could use it to evade. Bot release commits are skipped here.
+          set -e   # NOT -euo pipefail; the pipes below are pipefail-safe (no early-closing head)
+          # IDENTITY-based skip ONLY — automated actors. Never skip on commit-message
+          # content ([skip ci]/chore(release)): attacker-controllable. Bot release commits
+          # are already skipped here by actor identity.
           if [[ "$ACTOR" == *"[bot]"* ]] || [[ "$ACTOR" == "github-actions" ]]; then
             echo "Skipping audit — automated actor: $ACTOR"; exit 0
           fi
-          # Look up PRs. Distinguish "API OK, no PR" (bypass) from "API failed/garbled"
-          # (INDETERMINATE → FAIL the run; never silently skip, never false-positive).
-          if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>&1); then
-            echo "::error::gh api failed for $COMMIT_SHA — failing run (status indeterminate)"; exit 1
+          # Audit EVERY commit added by this push, not just HEAD: a multi-commit direct push
+          # whose HEAD is PR-associated would otherwise hide earlier commits. Read the commit
+          # list from $GITHUB_EVENT_PATH (the event JSON on disk) with jq — never the env var.
+          # FAIL-CLOSED if the payload is unreadable / not JSON / .commits is not an array
+          # (INDETERMINATE) so a multi-commit bypass can't slip through a silent HEAD-only
+          # fallback; a valid but EMPTY list legitimately falls back to HEAD.
+          if ! COMMIT_IDS=$(jq -r 'if (.commits|type)=="array" then (.commits[].id // empty) else error("commits not an array") end' "$GITHUB_EVENT_PATH" 2>/dev/null); then
+            echo "::error::Could not read a valid .commits array from \$GITHUB_EVENT_PATH — indeterminate; failing the run."; exit 1
           fi
-          if ! PR_COUNT=$(printf '%s' "$PRS_JSON" | jq -e 'if type=="array" then length else error("not array") end' 2>/dev/null); then
-            echo "::error::unexpected PR-list response — failing run"; exit 1
+          mapfile -t ALL_SHAS < <(printf '%s' "$COMMIT_IDS")
+          [ "${#ALL_SHAS[@]}" -eq 0 ] && ALL_SHAS=("$HEAD_SHA")
+          # Cap PR-lookup work at MAX_AUDIT=256; on overflow FAIL the run (durable red-X) so
+          # the unaudited remainder is never silently passed. Bypassing commits accumulate
+          # into ONE summary issue (no per-commit issue spam / content-creation rate-limit).
+          MAX_AUDIT=256; AUDIT_FAILED=0; BYPASS_COUNT=0
+          SHAS=("${ALL_SHAS[@]:0:$MAX_AUDIT}")
+          if [ "${#ALL_SHAS[@]}" -gt "$MAX_AUDIT" ]; then
+            echo "::error::Push has ${#ALL_SHAS[@]} commits (> $MAX_AUDIT) — audited the first $MAX_AUDIT and failing the run; review the remainder manually."
+            AUDIT_FAILED=1
           fi
-          if [ "$PR_COUNT" != "0" ]; then echo "No bypass — came from PR"; exit 0; fi
-          # No PR → direct push = bypass
-          echo "::warning::Admin bypass: direct push to main by $ACTOR ($COMMIT_SHA)"
-          # NO dedup on purpose: issue title/body are MUTABLE (anyone with issues:write,
-          # incl. via editing a bot-authored issue) → unsafe as a suppression primitive;
-          # a duplicate on a rare manual re-run is harmless. See ADR-0001.
-          gh label create "admin-bypass" --color "d93f0b" \
-            --description "Commit bypassed required status checks" --repo "$REPO" 2>/dev/null || true
-          # ... (body composition + gh issue create, see full template)
+          for COMMIT_SHA in "${SHAS[@]}"; do
+            # Distinguish "API OK, no merged-into-main PR" (bypass) from "API failed/garbled"
+            # (INDETERMINATE → AUDIT_FAILED=1, keep auditing). Capture stderr SEPARATELY (not
+            # 2>&1) so a benign warning can't corrupt the body into a false indeterminate.
+            PRS_ERR=$(mktemp)
+            if ! PRS_JSON=$(gh api "repos/$REPO/commits/$COMMIT_SHA/pulls" 2>"$PRS_ERR"); then
+              echo "::error::gh api failed for $COMMIT_SHA — indeterminate"; AUDIT_FAILED=1; rm -f "$PRS_ERR"; continue
+            fi
+            rm -f "$PRS_ERR"
+            # Count ONLY PRs actually MERGED INTO main (merged_at != null AND base.ref == "main"):
+            # /commits/{sha}/pulls also returns PRs that merely CONTAIN the commit, so a commit
+            # living on an unmerged/other-branch PR must not read as "no bypass".
+            if ! MERGED_PRS=$(printf '%s' "$PRS_JSON" | jq -e 'if type=="array" then [.[]|select(.merged_at!=null and .base.ref=="main")] else error("not array") end' 2>/dev/null); then
+              echo "::error::unexpected PR-list response for $COMMIT_SHA — indeterminate"; AUDIT_FAILED=1; continue
+            fi
+            [ "$(printf '%s' "$MERGED_PRS" | jq 'length')" != "0" ] && continue
+            # No merged-into-main PR → direct push = bypass. Accumulate a (sanitized) table row.
+            echo "::warning::Admin bypass: direct push to main by $ACTOR (commit ${COMMIT_SHA})"
+            BYPASS_COUNT=$((BYPASS_COUNT+1))
+            # ... (sanitize subject for the Markdown cell, build the row — see full template)
+          done
+          # NO dedup on purpose: issue title/body are MUTABLE (anyone with issues:write, incl.
+          # via editing a bot-authored issue) → unsafe as a suppression primitive; a duplicate
+          # on a rare re-run is harmless. See ADR-0001.
+          # If BYPASS_COUNT>0: ensure the admin-bypass label, then file ONE labeled summary
+          # issue listing every bypassing commit. If AUDIT_FAILED=1: exit 1 (durable red-X).
+          # ... (label + body composition + gh issue create, see full template)
 ```
 
-See `.github/workflows/bypass-audit.yml` in the helmet repo for the full template with issue body composition.
+See `.github/workflows/bypass-audit.yml` in the helmet repo for the full template (issue body composition, Markdown-cell subject sanitization, label fallback).
 
 **Detection logic:**
-1. If actor is a bot (`[bot]` suffix or `github-actions`) → skip. **IDENTITY-based skip only.**
-2. **Do NOT skip on commit-message content** (`[skip ci]` / `chore(release)`): that text is attacker-controllable, so a human bypasser could use it to evade. Legitimate release commits are authored by a bot actor and are already skipped by rule 1.
-3. Look up PRs associated with the commit SHA via `/commits/{sha}/pulls`.
-4. **If `gh api` fails OR returns a non-array → FAIL the run** (`exit 1`, durable red-X in Actions history). Never silently skip, never coerce a garbled response into a false-positive bypass issue.
-5. If API succeeded and zero associated PRs → direct-push bypass → warn + create issue. **No dedup** (see below / ADR-0001).
-6. Otherwise → commit came from PR → no alert.
+1. If actor is a bot (`[bot]` suffix or `github-actions`) → skip. **IDENTITY-based skip only** — never skip on commit-message content (`[skip ci]` / `chore(release)` are attacker-controllable; legitimate release commits are authored by a bot actor and are already skipped by this rule).
+2. Read the pushed commit list from `$GITHUB_EVENT_PATH` (the event JSON on disk) with `jq` — **never** `toJSON(github.event.commits)` through an env var (a large push can exceed the runner env/ARG_MAX limit and make the step fail to exec before any audit logic runs). **Fail the run** if the payload is unreadable / not JSON / `.commits` is not an array (indeterminate); a valid-but-empty list falls back to HEAD.
+3. **Audit every pushed commit, not just HEAD** (a multi-commit direct push whose HEAD is PR-associated would otherwise hide earlier commits). Capped at `MAX_AUDIT=256`; on overflow, **fail the run** so the unaudited remainder isn't silently passed. For each commit, look up `/commits/{sha}/pulls`.
+4. **If `gh api` fails OR returns a non-array → indeterminate → fail the run** (durable red-X in Actions history). Capture stderr separately (not `2>&1`) so a benign warning can't manufacture a false indeterminate. Never silently skip, never coerce a garbled response into a false-positive bypass issue.
+5. Count **only PRs MERGED INTO main** (`merged_at != null` AND `base.ref == "main"`) — `/commits/{sha}/pulls` also returns PRs that merely *contain* the commit, so a commit living on an unmerged/other-branch PR must not read as "no bypass".
+6. Commits with no merged-into-main PR → direct-push bypass → accumulate into **ONE summary issue** (no per-commit issue spam / content-creation rate-limit). **No dedup** (mutable issue metadata is an unsafe suppression primitive — see below / ADR-0001).
 
 **Known limitations (accepted):**
 - `gh pr merge --admin` associates the merge commit with a PR, so this won't flag admin-merges — that is pr-grind's authorized path, logged to `.claude/bypass-log.jsonl`.
@@ -3547,7 +3582,7 @@ See `.github/workflows/bypass-audit.yml` in the helmet repo for the full templat
 **Key points:**
 - **Creates a permanent audit trail** — GitHub Issues are durable, searchable, and trigger notifications. Step-summary-only alerts get forgotten.
 - **Label `admin-bypass`** is auto-created on first run (idempotent). Enables filtering: `gh issue list --label admin-bypass`.
-- **Uses env-var pattern** for all user-controlled inputs (`COMMIT_MSG`, `ACTOR`) — never interpolates `${{ github.event.* }}` directly into shell commands (workflow injection prevention).
+- **Never interpolates `${{ github.event.* }}` into shell** (workflow injection prevention): the actor name is passed via the `env:` block and quoted; the commit list and messages are read from `$GITHUB_EVENT_PATH` with `jq` (file data, never a shell-expanded expression).
 - **Honest about scope** — see Key Decisions section on what this does and doesn't catch.
 
 **N/A condition:** If `enforce_admins: true` on the repo's branch protection, this workflow provides no value (admins can't bypass in the first place). Safe to omit.
