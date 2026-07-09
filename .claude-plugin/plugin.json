@@ -1,7 +1,7 @@
 {
   "name": "helmet",
   "version": "1.22.1",
-  "description": "Full repo onboarding — bootstraps test infrastructure and wires CI/CD pipelines",
+  "description": "Full repo onboarding — bootstraps test infrastructure, wires CI/CD + security scanning, generates a project CLAUDE.md, and builds a CodeGraph index",
   "author": {
     "name": "chris-yyau"
   },

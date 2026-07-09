@@ -14,10 +14,10 @@ Full repo onboarding — bootstraps test infrastructure, CI/CD pipelines, and se
 
 ```text
 .claude-plugin/   Plugin manifests (plugin.json, marketplace.json)
-.github/          Workflows (5) and scripts (1)
+.github/          Workflows (7) and scripts (1)
 commands/         Slash command definitions (1: /helmet)
-scripts/          Build scripts (bump-version.sh)
-skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
+scripts/          Build scripts (bump-version.sh, check-pipeline-drift.sh, check-required-checks.sh)
+skills/           Skill definitions (1: helmet — large four-phase onboarding skill)
 ```
 
 ## Commands
@@ -47,7 +47,7 @@ skills/           Skill definitions (1: helmet — 2740-line onboarding skill)
 - **Actions security:** All actions SHA-pinned with version comments; harden-runner on every ubuntu job
 - **Permissions:** Permissions explicitly scoped per workflow; `permissions: {}` where possible, minimum required scopes granted per-job
 - **Dependabot:** Configured for `github-actions` ecosystem
-- **Required checks:** `version-drift`, `commitlint`, `Actions security` (zizmor) — enforced via branch protection (`strict: true`, `enforce_admins: false`)
+- **Required checks:** `version-drift`, `commitlint`, `Actions security` (zizmor), `Code security` (semgrep), `Dependency CVEs` (trivy), `IaC misconfig` (checkov) — the six entries in `.github/required-checks.lock`, enforced via branch protection (`strict: true`, `enforce_admins: false`)
 - **Security workflow pattern:** PR trigger has no path filter (workflow always starts); a `changes` job detects security-relevant files; scanner jobs gate on `if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')` — they run when security-relevant files changed OR when the `changes` job itself fails/cancels (fail-closed: a broken detector cannot silently bypass required checks). GitHub treats skipped jobs as passing for required checks, so irrelevant PRs cleanly skip. Push trigger retains path filters
 
 ## Version Sync
