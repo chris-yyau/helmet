@@ -37,7 +37,10 @@ write_json_field() {
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   local tmp="${file}.tmp"
-  jq "$jq_path = \"$value\"" "$file" > "$tmp" && mv "$tmp" "$file"
+  # Pass value as a jq --arg, not string-interpolated into the program, so a
+  # value containing quotes/pipes can't inject jq. ($field — and thus $jq_path —
+  # comes only from .version-bump.json, so the path side is config-trusted.)
+  jq --arg v "$value" "$jq_path = \$v" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 # Read the list of declared files from config.
@@ -74,6 +77,14 @@ cmd_check() {
   done < <(declared_files)
 
   echo ""
+
+  # Guard the empty-array expansion below: under `set -u`, "${versions[@]}" on an
+  # empty array aborts with "unbound variable" on bash 3.2 (macOS default). Only
+  # reachable when every declared manifest is missing.
+  if (( ${#versions[@]} == 0 )); then
+    echo "error: no declared files found" >&2
+    return 1
+  fi
 
   # Check if all versions match
   local unique
@@ -166,8 +177,11 @@ cmd_audit() {
 cmd_bump() {
   local new_version="$1"
 
-  # Validate semver-ish format
-  if ! echo "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+  # Validate semver-ish format. Anchored end-to-end: only strict X.Y.Z is
+  # accepted (semantic-release never emits pre-release tags here). If pre-release
+  # or build-metadata versions are ever introduced, relax this and re-verify the
+  # jq write path, which trusts this gate to keep injectable input out.
+  if ! echo "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     echo "error: '$new_version' doesn't look like a version (expected X.Y.Z)" >&2
     exit 1
   fi
