@@ -1,3 +1,10 @@
+## [1.22.2](https://github.com/chris-yyau/helmet/compare/v1.22.1...v1.22.2) (2026-07-09)
+
+
+### Bug Fixes
+
+* harden bump-version.sh, dedupe commitlint config, correct CI drift ([#57](https://github.com/chris-yyau/helmet/issues/57)) ([0833db6](https://github.com/chris-yyau/helmet/commit/0833db605b8560515aedcc355b119c161eef189c))
+
 ## [1.22.1](https://github.com/chris-yyau/helmet/compare/v1.22.0...v1.22.1) (2026-06-05)
 
 
