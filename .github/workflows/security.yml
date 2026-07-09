@@ -114,6 +114,9 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+      # template-only: no-op in helmet (its tests.yml has no trivy job, so skip stays false);
+      # kept for cascade parity with mirror repos whose tests.yml does run trivy. Delete when
+      # helmet's tests.yml gains a trivy job or the cascade drops trivy-in-tests mirrors.
       - name: Check for compliance job
         id: check
         run: |

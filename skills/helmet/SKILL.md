@@ -1324,7 +1324,7 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **LICENSE** | Proprietary repo license (all rights reserved) | `LICENSE` file at repo root |
 | **Cosign** | Keyless binary signing (forge release only) | `.github/workflows/release.yml` |
 | **Harden-Runner** | Monitor network egress + detect code overwrite in Actions (Ubuntu only) | First step in every ubuntu job |
-| **Commitlint** | Enforce Conventional Commits format (open-source repos only) | `commitlint.config.js` + `commitlint` job in `tests.yml` |
+| **Commitlint** | Enforce Conventional Commits format (open-source repos only) | `commitlint.config.mjs` + `commitlint` job in `tests.yml` |
 | **semantic-release** | Auto version bump + changelog + GitHub Release (open-source repos only) | `.releaserc.json` + `.github/workflows/release.yml` |
 | **OpenSSF Scorecard** | Security health score (18 checks, weekly cron + push) | `.github/workflows/scorecard.yml` |
 | **SECURITY.md** | Vulnerability disclosure policy | `SECURITY.md` at repo root |
@@ -1382,7 +1382,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | LICENSE | `[ -f LICENSE ]` | File exists |
 | SECURITY.md | `[ -f SECURITY.md ]` | File exists |
 | Release config | `[ -f .releaserc.json ]` | File exists (N/A for non-release repos) |
-| Commitlint config | `[ -f commitlint.config.js ]` | File exists (N/A for non-release repos) |
+| Commitlint config | `[ -f commitlint.config.mjs ]` | File exists (N/A for non-release repos) |
 | CodeScene config | `[ -f .codescene/custom-quality-gates.json ]` | File exists (N/A if CodeScene App not installed) |
 | Property tests | Any of `tests/test_properties*.py`, `__tests__/properties*.test.ts`, `properties_test.go`, `tests/properties.rs`, `PropertyTests.swift` | File exists (advisory; N/A if repo has no parser/validator/crypto/state-machine modules) |
 
@@ -1897,10 +1897,10 @@ GitHub-managed cache storage is part of the org's free tier (10 GB on most plans
 
 ```yaml
 steps:
-  - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
     with:
       persist-credentials: false
-  - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+  - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
     with:
       node-version: 20
       cache: npm
@@ -1916,7 +1916,7 @@ steps:
 
 ```yaml
 steps:
-  - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
     with:
       persist-credentials: false
   - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -1935,7 +1935,7 @@ steps:
 
 ```yaml
 steps:
-  - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
     with:
       persist-credentials: false
   - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9 # stable
@@ -1962,7 +1962,7 @@ steps:
 ```yaml
 runs-on: macos-latest  # ⚠️ 10x cost multiplier vs ubuntu-latest
 steps:
-  - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
     with:
       persist-credentials: false
   - run: |
@@ -1980,7 +1980,7 @@ steps:
 
 ```yaml
 steps:
-  - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
     with:
       persist-credentials: false
   - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -2049,8 +2049,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: suzuki-shunsuke/pinact-action@cf51507d80d4d6522a07348e3d58790290eaf0b6 # v2.0.0
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: suzuki-shunsuke/pinact-action@896d595f299e71d65b9d28349d6956abe144390a # v3.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -2086,10 +2086,10 @@ This matches ChatGPT's "PR = lightweight, push = artifact, release = signing, we
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Generate SBOM
@@ -2200,7 +2200,7 @@ For repos that distribute via GitHub Releases as source archives (shell projects
       attestations: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
       - name: Download source archives
@@ -2270,10 +2270,26 @@ For repos that need automated versioning, changelogs, and GitHub Releases. Only 
 
 **Prerequisites:** Repo must already use conventional commits (`feat:`, `fix:`, etc.).
 
-**Step 1: commitlint config** (`commitlint.config.js` at repo root):
+**Step 1: commitlint config** (`commitlint.config.mjs` at repo root):
 
 ```js
-export default { extends: ['@commitlint/config-conventional'] };
+// subject-case relaxed so Dependabot's start-case "Bump ..." titles pass (the
+// PR-title lint sees only the title, which carries no dependabot trailer, so
+// the `ignores` rule below cannot cover it); PascalCase/UPPER-CASE still blocked.
+// body-max-line-length is off (Dependabot commit bodies run long); the `ignores`
+// rule skips lint entirely for Dependabot-signed commits, so hand-written commits
+// still get every rule except body length. The trailer is not cryptographically
+// bound — this is a commit-message format gate, not a security control.
+export default {
+  extends: ['@commitlint/config-conventional'],
+  rules: {
+    'subject-case': [2, 'never', ['pascal-case', 'upper-case']],
+    'body-max-line-length': [0, 'always'],
+  },
+  ignores: [
+    (message) => message.includes('Signed-off-by: dependabot[bot]'),
+  ],
+};
 ```
 
 **Step 2: semantic-release config** (`.releaserc.json` at repo root):
@@ -2320,13 +2336,13 @@ jobs:
       pull-requests: write
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
       - name: Release
@@ -2350,17 +2366,22 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
-      - run: npm install @commitlint/cli @commitlint/config-conventional
+      # CI-only, exact-pinned dev install; repo is deliberately lockfile-less
+      - run: npm install --no-save --no-package-lock --no-audit --no-fund @commitlint/cli@20.5.0 @commitlint/config-conventional@20.5.0 # zizmor: ignore[adhoc-packages]
+      - name: Lint PR title (squash merge message)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: echo "$PR_TITLE" | npx commitlint
       - name: Lint commits
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -2424,10 +2445,10 @@ jobs:
       pull-requests: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Run Scorecard
@@ -2624,7 +2645,7 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
 
@@ -2796,7 +2817,7 @@ jobs:
 - **Idempotent under re-runs**: Dependabot rebases trigger workflow re-runs on the same PR. (1) `gh pr merge --auto --squash` pattern-matches its stderr — only the "already enabled" idempotency string is tolerated; all other failures (auth, rate limit, branch protection misconfig) abort the step. (2) The comment step uses the canonical fail-closed dedup pattern (capture-then-test, explicit grep status via `case`) — same shape as `security.yml`'s `changes` detector. Transient `gh pr view` failures surface as `::warning::` rather than silently re-commenting
 
 **SHA verification:**
-- `step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5` → v2.19.3
+- `step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411` → v2.19.4
 - `dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98` → v3.1.0
 - `hmarr/auto-approve-action@f0939ea97e9205ef24d872e76833fa908a770363` → v4.0.0
 
@@ -2910,7 +2931,7 @@ on:
       - '**/Package.resolved'
 
 concurrency:
-  group: security-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions: {}
@@ -2932,10 +2953,10 @@ jobs:
       security: ${{ steps.filter.outputs.security }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0              # Need full history to diff against base
           persist-credentials: false
@@ -2992,10 +3013,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Check for compliance job
@@ -3027,10 +3048,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Install semgrep
@@ -3048,10 +3069,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Install checkov
@@ -3069,10 +3090,10 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2.19.3
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - name: Verify SHA pinning
@@ -3739,7 +3760,7 @@ for dir in "$PROJECTS_DIR"/*/; do
   harden="❌"; semrel="❌"; commitlint_cfg="❌"
   grep -q 'harden-runner' "$dir/.github/workflows/tests.yml" 2>/dev/null && harden="✅"
   [ -f "$dir/.releaserc.json" ] && semrel="✅"
-  [ -f "$dir/commitlint.config.js" ] && commitlint_cfg="✅"
+  [ -f "$dir/commitlint.config.mjs" ] && commitlint_cfg="✅"
   scorecard="❌"; security_md="❌"; dependabot="❌"; dep_automerge="❌"; scanners_req="❌"
   [ -f "$dir/.github/workflows/scorecard.yml" ] && scorecard="✅"
   [ -f "$dir/SECURITY.md" ] && security_md="✅"

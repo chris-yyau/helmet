@@ -2,8 +2,10 @@
 // - subject-case relaxed so Dependabot's start-case "Bump ..." titles pass: the
 //   PR-title lint sees only the title, which carries no dependabot trailer, so
 //   the `ignores` rule below cannot cover it. PascalCase/UPPER-CASE still blocked.
-// - body-max-line-length off + a Dependabot-signed `ignores` let its long commit
-//   bodies through, while hand-written chore(deps) commits stay fully linted.
+// - body-max-line-length is off (Dependabot commit bodies run long); the `ignores`
+//   rule skips lint entirely for Dependabot-signed commits, so hand-written commits
+//   still get every rule except body length. The trailer is not cryptographically
+//   bound — this is a commit-message format gate, not a security control.
 export default {
   extends: ['@commitlint/config-conventional'],
   rules: {
