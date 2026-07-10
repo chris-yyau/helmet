@@ -14,3 +14,11 @@
 .claude/litmus-state.md
 .claude/bypass-log.jsonl
 .claude/review-metrics.jsonl
+.claude/ultra-oracle/
+.claude/*-review-packet.md
+
+# CodeGraph per-repo index (machine-local — daemon db, socket, pid, wal)
+.codegraph/
+
+# Multi-model review scratch (raw model dumps; curated follow-ups are filed as GitHub issues)
+docs/reviews/
