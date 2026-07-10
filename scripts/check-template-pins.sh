@@ -59,6 +59,20 @@ malformed() {
   grep -hE 'uses:.*@[0-9a-f]{40}' "$@" | grep -vE "$PIN_RE" || true
 }
 
+# Live actions whose SKILL.md `uses:` occurrence is NOT a well-formed `<40-hex> # vX.Y.Z`
+# pin — a malformed/absent version comment OR a regression to a tag/branch ref (`@v6`).
+# Args: LIVE_PINS_FILE SKILL_FILE. Prints offending action names; empty = all good.
+bad_shared_pins() {
+  local live_f="$1" skill_f="$2" action occ
+  while IFS= read -r action; do
+    occ=$(grep -hE "uses:[[:space:]]*${action//./\\.}@" "$skill_f" 2>/dev/null || true)
+    [[ -z "$occ" ]] && continue
+    if printf '%s\n' "$occ" | grep -qvE "@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)"; then
+      printf '%s\n' "$action"
+    fi
+  done < <(cut -d'|' -f1 "$live_f" | LC_ALL=C sort -u)
+}
+
 # report LIVE_PINS SKILL_PINS  → prints findings; returns 0 parity / 1 drift / 2 error.
 report() {
   local live_f="$1" skill_f="$2"
@@ -159,6 +173,13 @@ EOF
   if [[ -z "$(malformed "$tdir/bad.yml")" ]]; then echo "FAIL: malformed pin not flagged"; fail=1; fi
   if [[ -n "$(malformed "$tdir/good.yml")" ]]; then echo "FAIL: well-formed pin wrongly flagged"; fail=1; fi
 
+  # a live action tag/branch-regressed (or malformed) in SKILL.md is flagged; clean isn't.
+  printf 'actions/checkout|df4|6.0.3\n' > "$tdir/live2"
+  printf '  uses: actions/checkout@v6\n' > "$tdir/skill_tag"
+  printf '  uses: actions/checkout@%040d # v6.0.3\n' 0 > "$tdir/skill_ok"
+  if [[ -z "$(bad_shared_pins "$tdir/live2" "$tdir/skill_tag")" ]]; then echo "FAIL: tag-pinned live action not flagged"; fail=1; fi
+  if [[ -n "$(bad_shared_pins "$tdir/live2" "$tdir/skill_ok")" ]]; then echo "FAIL: well-formed shared pin wrongly flagged"; fail=1; fi
+
   rm -f "$lf" "$sf"
   if [[ "$fail" -eq 0 ]]; then echo "self-test: PASS"; exit 0; else echo "self-test: FAIL"; exit 1; fi
 fi
@@ -184,15 +205,17 @@ if [[ -n "$bad_live" ]]; then
   exit 2
 fi
 
-# Fail closed (Codex P2): a LIVE action SHA-pinned in SKILL.md on a `uses:` line but
-# with a malformed/absent `# vX.Y.Z` comment is invisible to extract(), so it would
-# surface as a non-failing live-only WARN instead of being compared. Scope to live
-# actions so template-only labels (e.g. rust-toolchain `# stable`) don't false-fail.
+# Fail closed on any LIVE action whose SKILL.md `uses:` occurrence is not a well-formed
+# `<40-hex> # vX.Y.Z` pin — whether the version comment is malformed/absent OR the ref
+# regressed to a tag/branch (e.g. `@v6`). Either lets an unpinned/uncompared action ship
+# in the installed template, and check-pinned-uses.sh scans only .github/, never SKILL.md,
+# so this is the sole guard for the template's shared-action pins. Scoped to live actions
+# so template-only refs (e.g. rust-toolchain `@… # stable`) don't false-fail.
 if [[ -s "$live_f" ]]; then
-  bad=$(malformed "$SKILL" | grep -oE '[A-Za-z0-9._/-]+@[0-9a-f]{40}' | sed 's/@.*//' \
-        | LC_ALL=C sort -u | grep -Fxf <(cut -d'|' -f1 "$live_f") || true)
+  bad=$(bad_shared_pins "$live_f" "$SKILL")
   if [[ -n "$bad" ]]; then
-    echo "ERROR: live action(s) SHA-pinned in SKILL.md with a malformed/absent '# vX.Y.Z' comment (fail-closed):" >&2
+    echo "ERROR: live action(s) referenced in SKILL.md without a well-formed '<40-hex> # vX.Y.Z' pin" >&2
+    echo "       (tag/branch ref or malformed version comment — fail-closed):" >&2
     printf '%s\n' "$bad" | sed 's/^/  /' >&2
     exit 2
   fi
