@@ -38,9 +38,16 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 # makes join silently miss the pair and report false parity (fail-open). `-k2` keeps
 # the sha+version as a secondary key so `-u` still dedupes whole lines and distinct
 # pins for the same action survive (the conflict check below relies on that).
+# The single strict pin contract, shared by extract() and malformed(): a 40-hex SHA
+# followed by exactly ` # vX.Y.Z` (three-part semver) that ENDS at whitespace or EOL.
+# The trailing boundary rejects 4-part `# v1.2.3.4` and pre-release `# v1.2.3-beta`
+# so extract() and malformed() never disagree on what "valid" means. (A legit trailing
+# ` # zizmor: …` comment still ends the semver with a space, so it stays valid.)
+PIN_RE='@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)'
+
 extract() {
-  grep -hoE '[A-Za-z0-9._/-]+@[0-9a-f]{40} # v[0-9][0-9.]*' "$@" \
-    | sed -E 's/@([0-9a-f]{40}) # v([0-9][0-9.]*)/|\1|\2/' \
+  grep -hoE "[A-Za-z0-9._/-]+$PIN_RE" "$@" \
+    | sed -E 's/@([0-9a-f]{40}) # v([0-9]+\.[0-9]+\.[0-9]+).*/|\1|\2/' \
     | LC_ALL=C sort -t'|' -k1,1 -k2 -u
 }
 
@@ -49,7 +56,7 @@ extract() {
 # drops these; scoped to `uses:` lines so the SHA-verification doc table (arrow
 # `→ v` rows) is not matched. Mirrors extract()'s ` # v[0-9]` discriminator.
 malformed() {
-  grep -hE 'uses:.*@[0-9a-f]{40}' "$@" | grep -vE '@[0-9a-f]{40} # v[0-9]' || true
+  grep -hE 'uses:.*@[0-9a-f]{40}' "$@" | grep -vE "$PIN_RE" || true
 }
 
 # report LIVE_PINS SKILL_PINS  → prints findings; returns 0 parity / 1 drift / 2 error.
@@ -166,6 +173,16 @@ live_f=$(mktemp); skill_f=$(mktemp)
 trap 'rm -f "$live_f" "$skill_f"' EXIT
 extract "$WF_DIR"/*.yml > "$live_f" || true
 extract "$SKILL"        > "$skill_f" || true
+
+# Fail closed on any malformed pin in the live workflows: extract() drops it from the
+# live set, so a malformed shared live action would otherwise go uncompared. Live is
+# helmet's own CI — every `uses:` pin must be well-formed, so flag any that isn't.
+bad_live=$(malformed "$WF_DIR"/*.yml)
+if [[ -n "$bad_live" ]]; then
+  echo "ERROR: live workflow action(s) SHA-pinned without a well-formed '# vX.Y.Z' comment (fail-closed):" >&2
+  printf '%s\n' "$bad_live" | sed 's/^/  /' >&2
+  exit 2
+fi
 
 # Fail closed (Codex P2): a LIVE action SHA-pinned in SKILL.md on a `uses:` line but
 # with a malformed/absent `# vX.Y.Z` comment is invisible to extract(), so it would
