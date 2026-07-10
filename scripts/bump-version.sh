@@ -21,13 +21,27 @@ fi
 
 # --- helpers ---
 
+# Convert a config-declared dotted field ("plugins.0.version") to a jq path
+# (".plugins[0].version"). The field comes from .version-bump.json and is
+# interpolated into the jq program below, so validate it against a strict
+# word/dot pattern first: a crafted field with jq operators could otherwise
+# read env (env.SECRET) or write unrelated properties.
+field_to_jq_path() {
+  local field="$1"
+  local field_re='^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$'
+  if [[ ! "$field" =~ $field_re ]]; then
+    echo "error: invalid field path '$field' in $CONFIG" >&2
+    return 1
+  fi
+  echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g'
+}
+
 # Read a dotted field path from a JSON file.
 # Handles both simple ("version") and nested ("plugins.0.version") paths.
 read_json_field() {
   local file="$1" field="$2"
-  # Convert dot-path to jq path: "plugins.0.version" -> .plugins[0].version
   local jq_path
-  jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
+  jq_path=$(field_to_jq_path "$field") || return 1
   jq -r "$jq_path" "$file"
 }
 
@@ -35,11 +49,10 @@ read_json_field() {
 write_json_field() {
   local file="$1" field="$2" value="$3"
   local jq_path
-  jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
+  jq_path=$(field_to_jq_path "$field") || return 1
   local tmp="${file}.tmp"
-  # Pass value as a jq --arg, not string-interpolated into the program, so a
-  # value containing quotes/pipes can't inject jq. ($field — and thus $jq_path —
-  # comes only from .version-bump.json, so the path side is config-trusted.)
+  # Value passed via jq --arg (not interpolated) so a jq-syntax value cannot
+  # alter the filter; jq_path is validated by field_to_jq_path above.
   jq --arg v "$value" "$jq_path = \$v" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
@@ -177,11 +190,14 @@ cmd_audit() {
 cmd_bump() {
   local new_version="$1"
 
-  # Validate semver-ish format. Anchored end-to-end: only strict X.Y.Z is
+  # Validate semver format. bash [[ =~ ]] anchors against the WHOLE string;
+  # grep -E matches line-by-line, so a multiline value like $'1.2.3\npayload'
+  # would slip its valid first line past validation. Only strict X.Y.Z is
   # accepted (semantic-release never emits pre-release tags here). If pre-release
   # or build-metadata versions are ever introduced, relax this and re-verify the
   # jq write path, which trusts this gate to keep injectable input out.
-  if ! echo "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  local semver_re='^[0-9]+\.[0-9]+\.[0-9]+$'
+  if [[ ! "$new_version" =~ $semver_re ]]; then
     echo "error: '$new_version' doesn't look like a version (expected X.Y.Z)" >&2
     exit 1
   fi
