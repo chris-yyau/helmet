@@ -29,6 +29,8 @@ jobs:
           persist-credentials: false
       - name: Check version sync
         run: ./scripts/bump-version.sh --check
+      - name: Check template pin parity
+        run: ./scripts/check-template-pins.sh
 
   commitlint:
     runs-on: ubuntu-latest
