@@ -1,3 +1,10 @@
+## [1.22.3](https://github.com/chris-yyau/helmet/compare/v1.22.2...v1.22.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* complete bump-version.sh jq-injection and semver hardening ([#60](https://github.com/chris-yyau/helmet/issues/60)) ([4520429](https://github.com/chris-yyau/helmet/commit/45204295b5c2feec56d0c6518696c03141701857)), closes [#57](https://github.com/chris-yyau/helmet/issues/57)
+
 ## [1.22.2](https://github.com/chris-yyau/helmet/compare/v1.22.1...v1.22.2) (2026-07-09)
 
 
