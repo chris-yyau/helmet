@@ -1,4 +1,8 @@
 
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
 # helmet drift-scan fleet list (operator-specific)
 .helmet-fleet
 
