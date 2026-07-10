@@ -1,3 +1,10 @@
+## [1.22.4](https://github.com/chris-yyau/helmet/compare/v1.22.3...v1.22.4) (2026-07-10)
+
+
+### Bug Fixes
+
+* **security:** harden .github/ detector guard to fail-closed on grep error ([#62](https://github.com/chris-yyau/helmet/issues/62)) ([dda4d08](https://github.com/chris-yyau/helmet/commit/dda4d0800644bebd71c89fcc55c4bcdcfebf68de)), closes [#318](https://github.com/chris-yyau/helmet/issues/318)
+
 ## [1.22.3](https://github.com/chris-yyau/helmet/compare/v1.22.2...v1.22.3) (2026-07-10)
 
 
