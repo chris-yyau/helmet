@@ -65,8 +65,11 @@ extract() {
 # selector mirrors check-pinned-uses.sh, so quoted (`uses: "a/b@x"`) and subpath
 # (`a/b/c@x`) refs are covered; local `uses: ./…` and `docker://…` (no `@`) are not.
 malformed() {
-  grep -hE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]+@[^[:space:]]+' "$@" \
-    | grep -vE "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?docker://" \
+  # selector allows an optional YAML `&anchor` before the value so an anchored ref
+  # (`uses: &x actions/checkout@v6`) is still SELECTED — and, since WELLFORMED_RE has no
+  # anchor branch, always flagged (fail-closed). docker:// digest refs are exempt.
+  grep -hE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(&[^[:space:]]+[[:space:]]+)?[^[:space:]]+@[^[:space:]]*' "$@" \
+    | grep -vE "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(&[^[:space:]]+[[:space:]]+)?[\"']?docker://" \
     | grep -vE "$WELLFORMED_RE" || true
 }
 
@@ -74,14 +77,17 @@ malformed() {
 # pin — a malformed/absent version comment OR a regression to a tag/branch ref (`@v6`).
 # Args: LIVE_PINS_FILE SKILL_FILE. Prints offending action names; empty = all good.
 bad_shared_pins() {
-  local live_f="$1" skill_f="$2" action occ
-  while IFS= read -r action; do
-    occ=$(grep -hE "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?${action//./\\.}@" "$skill_f" 2>/dev/null || true)
-    [[ -z "$occ" ]] && continue
-    if printf '%s\n' "$occ" | grep -qvE "$WELLFORMED_RE"; then
-      printf '%s\n' "$action"
-    fi
-  done < <(cut -d'|' -f1 "$live_f" | LC_ALL=C sort -u)
+  local live_f="$1" skill_f="$2" skill_bad
+  # Action names of SKILL.md `uses:` lines that are NOT well-formed pins (reuses
+  # malformed(), so all its YAML robustness applies). Intersect with live action names
+  # via grep -F (fixed strings — no ERE interpolation of the action, so a name with
+  # regex metacharacters can't dodge the match). Template-only actions fall out of the
+  # intersection, so their legitimately-non-semver refs don't false-fail.
+  skill_bad=$(malformed "$skill_f" \
+    | sed -nE "s/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(&[^[:space:]]+[[:space:]]+)?[\"']?([^\"'@[:space:]]+)@.*/\3/p" \
+    | LC_ALL=C sort -u)
+  [[ -z "$skill_bad" ]] && return 0
+  printf '%s\n' "$skill_bad" | grep -Fxf <(cut -d'|' -f1 "$live_f") || true
 }
 
 # report LIVE_PINS SKILL_PINS  → prints findings; returns 0 parity / 1 drift / 2 error.
