@@ -17,7 +17,7 @@ Source: full-plugin audit (2 parallel agents + inline verification; every findin
 
 ## Dependency graph (land order)
 
-```
+```text
 PR-1 (fix) ──> PR-2 (docs) ──> PR-3 (chore/dedup)
 PR-4 (cruft) — independent; may fold into PR-1
 ```
@@ -150,7 +150,7 @@ PR-4 (cruft) — independent; may fold into PR-1
 
 ## PR-4 `chore:` — repo cruft (finding 12) — independent, may fold into PR-1
 
-- **Committed scope:** add `.DS_Store` to `.gitignore` (verified: no `.DS_Store` is currently git-tracked, so no `git rm --cached` needed in helmet; mirrors should run `git rm --cached -r --ignore-unmatch '*.DS_Store'` as a no-op safety net).
+- **Committed scope:** add `.DS_Store` to `.gitignore` (verified: no `.DS_Store` is currently git-tracked, so no `git rm --cached` needed in helmet; mirrors should run `git rm --cached -r --ignore-unmatch '*.DS_Store'` as a no-op safety net). As executed, PR-4 additionally ignored other local-only artifacts accumulated during this audit — `.codegraph/`, `.claude/ultra-oracle/`, `.claude/*-review-packet.md`, and `docs/reviews/` — all maintainer-local scratch that doesn't survive clones and was never intended to be tracked.
 - **Maintainer-local cleanup (not part of any PR; doesn't survive clones):** `rm -rf ./~` — this removes a repo-local directory literally named `~` (an artifact of an unexpanded-tilde hook write; the `./` prefix makes it unambiguous that it is NOT `$HOME`) — plus `rm .DS_Store skills/.DS_Store .pr-body-phase-d.md`.
 
 ## Cascade note
@@ -166,7 +166,7 @@ Helmet templates propagate to 6 mirror repos (busdriver, perch, chrisyau.me, jik
 ## Follow-ups (recorded, not in these PRs)
 
 - **Template/live pin-parity checker** — extend `check-pipeline-drift.sh` (or a small sibling script) to extract `uses: owner/action@sha` from `.github/workflows/*.yml` and from fenced templates in SKILL.md, failing on mismatch for the shared action set. This is the durable fix for the drift class PR-2 patches once (the plan's own wrong-SHA incident is this brittleness realized). Owner: maintainer; trigger: next time a Dependabot bump lands and SKILL.md isn't updated in the same week.
-- Remaining low-priority review notes live in `docs/reviews/audit-remediation/follow-up-issues.md`.
+- Remaining low-priority review notes were captured in local git-ignored scratch (`docs/reviews/audit-remediation/follow-up-issues.md` — not part of the repo, per the status banner above); the actionable items from that scratch are tracked as GitHub issues #63 and #64.
 
 ## Out of scope (checked, fine as-is)
 
