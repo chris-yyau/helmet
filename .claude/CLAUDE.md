@@ -16,7 +16,7 @@ Full repo onboarding — bootstraps test infrastructure, CI/CD pipelines, and se
 .claude-plugin/   Plugin manifests (plugin.json, marketplace.json)
 .github/          Workflows (7) and scripts (1)
 commands/         Slash command definitions (1: /helmet)
-scripts/          Build scripts (bump-version.sh, check-pipeline-drift.sh, check-required-checks.sh)
+scripts/          Build scripts (bump-version.sh, check-pipeline-drift.sh, check-required-checks.sh, check-template-pins.sh)
 skills/           Skill definitions (1: helmet — large four-phase onboarding skill)
 ```
 
@@ -27,12 +27,13 @@ skills/           Skill definitions (1: helmet — large four-phase onboarding s
 | `./scripts/bump-version.sh <ver>` | Sync version across all 3 manifests |
 | `./scripts/bump-version.sh --check` | Verify manifests are in sync (used in CI) |
 | `.github/scripts/check-pinned-uses.sh` | Verify all Actions use full SHA pins |
+| `./scripts/check-template-pins.sh` | Verify SKILL.md template action pins match live workflow pins (runs in the `version-drift` CI job) |
 
 ## CI Workflows
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| `tests.yml` | PR | Version drift detection + commitlint |
+| `tests.yml` | PR | Version drift detection + template pin parity + commitlint |
 | `security.yml` | Push (path-filtered) + PR (all, job-level skip) | Semgrep, Checkov, Zizmor, Trivy scanners |
 | `pinact.yml` | Push to main (`.github/workflows/**` paths only) | Auto-pin GitHub Actions to SHA |
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
