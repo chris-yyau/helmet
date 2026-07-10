@@ -38,25 +38,36 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 # makes join silently miss the pair and report false parity (fail-open). `-k2` keeps
 # the sha+version as a secondary key so `-u` still dedupes whole lines and distinct
 # pins for the same action survive (the conflict check below relies on that).
-# The single strict pin contract, shared by extract() and malformed(): a 40-hex SHA
-# followed by exactly ` # vX.Y.Z` (three-part semver) that ENDS at whitespace or EOL.
-# The trailing boundary rejects 4-part `# v1.2.3.4` and pre-release `# v1.2.3-beta`
-# so extract() and malformed() never disagree on what "valid" means. (A legit trailing
-# ` # zizmor: …` comment still ends the semver with a space, so it stays valid.)
-PIN_RE='@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)'
+# A FULLY well-formed pinned-action line, anchored from the `uses:` KEY so validation
+# targets the parsed VALUE, not "anywhere on the line". This is the SINGLE contract used
+# by BOTH extract() (parity capture) and malformed() (fail-closed), so they can never
+# disagree on what "valid" means. It defeats a fake pin planted in a trailing comment
+# (`@main # actions/x@<40-hex> # v1.0.0` can't launder an unpinned ref), accepts a quoted
+# value (`uses: "a/b@<40-hex>" # v1.2.3`) and flexible whitespace, and rejects 4-part
+# `# v1.2.3.4` / pre-release `# v1.2.3-beta` via the trailing ws/EOL boundary.
+# SCOPE: block-mapping `[- ]uses:` lines — the ONLY form helmet's workflows and the
+# SKILL.md template use, matching .github/scripts/check-pinned-uses.sh (the repo's
+# canonical SHA-pin gate). Flow-style `{ uses: … }` is out of scope for both.
+# The value is `<action>@<40-hex>`, either double-quoted, single-quoted, or unquoted —
+# each a BALANCED alternative so an unbalanced trailing quote (`@<40-hex>'`, a mutable
+# ref) cannot pass. Followed by a ` # vX.Y.Z` comment ending at whitespace/EOL.
+WELLFORMED_RE="^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(\"[^\"@[:space:]]+@[0-9a-f]{40}\"|'[^'@[:space:]]+@[0-9a-f]{40}'|[^\"'@[:space:]]+@[0-9a-f]{40})[[:space:]]+#[[:space:]]+v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)"
 
 extract() {
-  grep -hoE "[A-Za-z0-9._/-]+$PIN_RE" "$@" \
-    | sed -E 's/@([0-9a-f]{40}) # v([0-9]+\.[0-9]+\.[0-9]+).*/|\1|\2/' \
+  grep -hE "$WELLFORMED_RE" "$@" \
+    | sed -nE "s/^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?([^\"'@[:space:]]+)@([0-9a-f]{40})[\"']?[[:space:]]+#[[:space:]]+v([0-9]+\.[0-9]+\.[0-9]+).*/\2|\3|\4/p" \
     | LC_ALL=C sort -t'|' -k1,1 -k2 -u
 }
 
-# `uses:` lines carrying an `owner/repo@<40-hex>` SHA pin whose suffix is NOT a
-# well-formed ` # vX.Y.Z` comment (e.g. `# stable`, or none). extract() silently
-# drops these; scoped to `uses:` lines so the SHA-verification doc table (arrow
-# `→ v` rows) is not matched. Mirrors extract()'s ` # v[0-9]` discriminator.
+# `uses:` lines pinning a ref (`uses: <token>@<token>`) that is NOT a well-formed
+# `<40-hex> # vX.Y.Z` pin — a tag/branch ref (`@v6`, `@main`) OR a malformed/absent
+# version comment (`# stable`). extract() silently drops all of these. The `<token>@<token>`
+# selector mirrors check-pinned-uses.sh, so quoted (`uses: "a/b@x"`) and subpath
+# (`a/b/c@x`) refs are covered; local `uses: ./…` and `docker://…` (no `@`) are not.
 malformed() {
-  grep -hE 'uses:.*@[0-9a-f]{40}' "$@" | grep -vE "$PIN_RE" || true
+  grep -hE '^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[^[:space:]]+@[^[:space:]]+' "$@" \
+    | grep -vE "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?docker://" \
+    | grep -vE "$WELLFORMED_RE" || true
 }
 
 # Live actions whose SKILL.md `uses:` occurrence is NOT a well-formed `<40-hex> # vX.Y.Z`
@@ -65,9 +76,9 @@ malformed() {
 bad_shared_pins() {
   local live_f="$1" skill_f="$2" action occ
   while IFS= read -r action; do
-    occ=$(grep -hE "uses:[[:space:]]*${action//./\\.}@" "$skill_f" 2>/dev/null || true)
+    occ=$(grep -hE "^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*[\"']?${action//./\\.}@" "$skill_f" 2>/dev/null || true)
     [[ -z "$occ" ]] && continue
-    if printf '%s\n' "$occ" | grep -qvE "@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+([[:space:]]|$)"; then
+    if printf '%s\n' "$occ" | grep -qvE "$WELLFORMED_RE"; then
       printf '%s\n' "$action"
     fi
   done < <(cut -d'|' -f1 "$live_f" | LC_ALL=C sort -u)
@@ -190,17 +201,33 @@ WF_DIR="$REPO_ROOT/.github/workflows"
 if [[ ! -f "$SKILL" ]]; then echo "ERROR: not found: $SKILL" >&2; exit 2; fi
 if [[ ! -d "$WF_DIR" ]]; then echo "ERROR: not found: $WF_DIR" >&2; exit 2; fi
 
+# GitHub runs BOTH .yml and .yaml workflows — cover both, or a tag/stale pin could hide
+# in a .yaml file outside this check. nullglob so a missing extension doesn't leave a
+# literal glob; an empty set is a setup error (fail-closed).
+shopt -s nullglob
+wf_files=("$WF_DIR"/*.yml "$WF_DIR"/*.yaml)
+shopt -u nullglob
+if [[ ${#wf_files[@]} -eq 0 ]]; then echo "ERROR: no workflow files in $WF_DIR" >&2; exit 2; fi
+
+# Fail closed on any unreadable input BEFORE extraction: the `|| true` on the extract
+# calls (needed so a benign no-match doesn't abort) would otherwise let a permission
+# error silently drop a workflow and certify parity on a partial read.
+for f in "${wf_files[@]}" "$SKILL"; do
+  [[ -r "$f" ]] || { echo "ERROR: cannot read $f — refusing to certify parity (fail-closed)" >&2; exit 2; }
+done
+
 live_f=$(mktemp); skill_f=$(mktemp)
 trap 'rm -f "$live_f" "$skill_f"' EXIT
-extract "$WF_DIR"/*.yml > "$live_f" || true
-extract "$SKILL"        > "$skill_f" || true
+extract "${wf_files[@]}" > "$live_f" || true
+extract "$SKILL"         > "$skill_f" || true
 
-# Fail closed on any malformed pin in the live workflows: extract() drops it from the
-# live set, so a malformed shared live action would otherwise go uncompared. Live is
-# helmet's own CI — every `uses:` pin must be well-formed, so flag any that isn't.
-bad_live=$(malformed "$WF_DIR"/*.yml)
+# Every EXTERNAL action `uses:` in the live workflows must be a well-formed
+# `<40-hex> # vX.Y.Z` pin — flag tags, branches, and malformed comments. Defense in
+# depth with check-pinned-uses.sh, and it keeps extract()'s live set complete so the
+# parity comparison can't be dodged by a pin extract() couldn't parse.
+bad_live=$(malformed "${wf_files[@]}")
 if [[ -n "$bad_live" ]]; then
-  echo "ERROR: live workflow action(s) SHA-pinned without a well-formed '# vX.Y.Z' comment (fail-closed):" >&2
+  echo "ERROR: live workflow action(s) not pinned to a well-formed '<40-hex> # vX.Y.Z' (fail-closed):" >&2
   printf '%s\n' "$bad_live" | sed 's/^/  /' >&2
   exit 2
 fi
