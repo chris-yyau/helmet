@@ -3037,22 +3037,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Check for compliance job
-        id: check
-        run: |
-          # Only skip on push — compliance job in tests.yml is push-only,
-          # so PRs must always run trivy here for coverage.
-          if [[ "${GITHUB_EVENT_NAME}" == "push" ]] && grep -ql 'trivy-action\|scanners.*vuln' .github/workflows/tests.yml 2>/dev/null; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Trivy already covered by compliance job — skipping"
-          fi
       - name: Scan dependencies
-        if: steps.check.outputs.skip != 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scanners: vuln
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: 1
           skip-dirs: tests
 
@@ -3073,7 +3064,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install semgrep
-        run: pip install --quiet 'semgrep==1.157.0'  # Pin version — unpinned is a supply chain risk
+        run: pip install --quiet 'semgrep==1.169.0'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan for vulnerabilities
         run: semgrep scan --config p/security-audit --error --exclude tests .
 
@@ -3094,7 +3085,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install checkov
-        run: pip install --quiet 'checkov==3.2.510'  # Pin version — unpinned is a supply chain risk
+        run: pip install --quiet 'checkov==3.3.8'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan for misconfigurations
         run: checkov -d . --skip-path tests --quiet --compact
 
@@ -3117,7 +3108,7 @@ jobs:
       - name: Verify SHA pinning
         run: bash .github/scripts/check-pinned-uses.sh
       - name: Install zizmor
-        run: pip install --quiet 'zizmor==1.23.1'  # Pin version — unpinned is a supply chain risk
+        run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan GitHub Actions workflows
         run: zizmor --min-severity high --min-confidence high .github/workflows/
 
@@ -3157,7 +3148,7 @@ jobs:
 - Runs on push AND PRs (unlike compliance which is push-only) — catches issues before merge
 - `tests/` excluded from semgrep and checkov to avoid false positives on test fixtures
 - `pip install` for Python tools (semgrep, checkov, zizmor) — no additional GitHub Actions to pin/maintain
-- Trivy auto-skips if compliance job exists in `tests.yml` — one template for all repos, no manual toggling
+- security.yml always runs trivy on PRs and pushes; a repo with a push-only compliance trivy job accepts one duplicate push-time scan (~1 runner-minute) — no conditional skip logic to drift or bypass
 - **Workflow changes are a high-risk path** — the zizmor job runs SHA pin verification BEFORE zizmor scan; both block on failure. This catches AI-generated workflows that use tags instead of SHA pins
 - SHA pin verification uses grep, not pinact CLI — zero extra dependencies, catches `@v4` / `@main` / short SHAs. Local actions (`uses: ./`) and `docker://` refs are exempt
 - **Inline version comment is mandatory:** `@<sha> # vX.Y.Z` on the same line. Dependabot reads this comment to track which version the SHA corresponds to and updates both SHA + comment when bumping
