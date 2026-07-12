@@ -1,3 +1,10 @@
+## [1.22.5](https://github.com/chris-yyau/helmet/compare/v1.22.4...v1.22.5) (2026-07-12)
+
+
+### Bug Fixes
+
+* **security:** always scan in security.yml + pin scanners to close [#63](https://github.com/chris-yyau/helmet/issues/63) ([#69](https://github.com/chris-yyau/helmet/issues/69)) ([c92f874](https://github.com/chris-yyau/helmet/commit/c92f874d47f4670aaa293d2bf6cabfc6b77930c0)), closes [#66](https://github.com/chris-yyau/helmet/issues/66) [#67](https://github.com/chris-yyau/helmet/issues/67)
+
 ## [1.22.4](https://github.com/chris-yyau/helmet/compare/v1.22.3...v1.22.4) (2026-07-10)
 
 
