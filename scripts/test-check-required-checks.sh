@@ -29,7 +29,11 @@ fail=0
 # the repo. Per-case inputs (lock, commit list, check-run JSON, branch
 # protection) are rewritten under $ROOT/mock between runs; the mock `gh`
 # reads them fresh via $GH_MOCK_DIR.
-ROOT="$(mktemp -d)"
+# Guard mktemp: without `set -e`, an unchecked failure would leave ROOT empty
+# and every derived path would resolve under `/` (e.g. /bin/gh) — catastrophic
+# under a privileged run. Fail hard instead.
+ROOT="$(mktemp -d)" || { echo "error: mktemp -d failed" >&2; exit 2; }
+[[ -n "$ROOT" && -d "$ROOT" ]] || { echo "error: mktemp -d produced no directory" >&2; exit 2; }
 trap 'rm -rf "$ROOT"' EXIT
 MOCK="$ROOT/mock"
 mkdir -p "$ROOT/scripts" "$ROOT/.github/workflows" "$ROOT/bin" "$MOCK"
@@ -248,6 +252,22 @@ check "T7a partial walk + fetch failure under --strict-remote → DRIFT, exit 1"
 RUN_ARGS=(--owner o --repo r)
 check "T7b same partial walk in default mode → warn-only, exit 0 (lenient)" 0 \
   +"no recent commit (last 10) had check-runs" -"DRIFT"
+
+# ── T8: newest commit fetch FAILS, older commit is lock-named → strict drifts ──
+# The walk skips the newest commit (fetch error) and accepts the older, clean
+# one. Under --strict-remote the unexaminable newer commit is a verification
+# gap → DRIFT even though the accepted commit verifies. Default mode accepts it.
+make_lock 6; reset_mock
+printf 'sha_new\nsha_old\n' > "$MOCK/commit_shas.txt"
+: > "$MOCK/fail_sha_new"          # newest commit's check-runs fetch errors
+ALL_VERIFIED sha_old
+RUN_ARGS=(--owner o --repo r --strict-remote)
+check "T8a newer-commit fetch failure + accepted older commit → strict DRIFT, exit 1" 1 \
+  +"using commit: sha_old" \
+  +"a newer commit's check-runs could not be fetched"
+RUN_ARGS=(--owner o --repo r)
+check "T8b same, default mode → accepts older commit, exit 0 (lenient)" 0 \
+  +"using commit: sha_old" +"every required check is reported" -"DRIFT"
 
 # ── report ───────────────────────────────────────────────────────────────
 echo ""

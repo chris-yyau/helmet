@@ -754,6 +754,19 @@ if [[ -z "$runs_json" ]]; then
 fi
 echo "  using commit: ${sha:0:7}"
 
+# Fail-closed on an incomplete walk even when a commit WAS accepted. The walk
+# runs newest→oldest and breaks on acceptance, so any api_error recorded before
+# the break is on a commit NEWER than the accepted one — one we could not
+# examine. That newer commit is exactly where a just-landed source_app takeover
+# would first appear, so accepting the older commit could miss it. Under
+# --strict-remote that unverifiable gap is drift; the per-check tally below
+# still prints for context. (Default mode stays lenient — transient API blips
+# shouldn't fail an onboarding run.)
+if [[ "$STRICT_REMOTE" -eq 1 && "$api_error" -eq 1 ]]; then
+  echo "  DRIFT: a newer commit's check-runs could not be fetched — accepted commit ${sha:0:7} may not reflect current source_app state (--strict-remote)"
+  drift=1
+fi
+
 # Per-check verification with an honest tally. Three terminal states per lock
 # entry:
 #   verified — a run posted under this name AND its app.slug == source_app
