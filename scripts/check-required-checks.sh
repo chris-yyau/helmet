@@ -688,6 +688,21 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
   # for the first element — 0 is truthy in jq, so `select` keeps a name found
   # at index 0. Guard jq errors with `|| echo 0` so a malformed run array
   # keeps the walk going rather than aborting under `set -e`.
+  #
+  # DELIBERATE single-commit model (design-reviewed; see the audit-fix plan's
+  # "Out of scope" note): we verify source_app against ONE accepted commit, so
+  # a required check that did not run on it is reported `missing` (warn-only,
+  # incl. --strict-remote) rather than drift. This is REQUIRED, not lax: the
+  # lock legitimately mixes push-triggered gates (scanners) with PR-only gates
+  # (version-drift, commitlint) that NEVER post on a main-branch commit —
+  # demanding full per-commit coverage would make --strict-remote drift on
+  # every main commit and render the mode useless. Known, accepted limitation
+  # of this model: a source_app takeover of a check that ran on a *non-accepted*
+  # commit but is missing on the accepted one is not caught here. Mitigation:
+  # the honest summary below reports the exact `missing` (unverified) count, so
+  # the blind spot is visible, never silently green. Upgrade path if this
+  # becomes a real threat: aggregate the most-recent run per lock name across
+  # the whole 10-commit window instead of a single accepted commit.
   req_hits=$(printf '%s' "$rj" | jq --argjson names "$req_names" \
     '[.[] | select(.name as $n | $names | index($n))] | length' 2>/dev/null || echo 0)
   if [[ "${req_hits:-0}" -gt 0 ]]; then
