@@ -718,12 +718,22 @@ if [[ -z "$runs_json" ]]; then
   # short by an API failure is NOT a benign "docs-only pushes" state — it's
   # incomplete verification, so it falls through to the fail-closed ladder.
   if [[ "$any_runs_seen" -eq 1 && "$api_error" -eq 0 ]]; then
-    # Exhaustion state 2: CI ran on recent commits but none carried a
-    # lock-named check (docs-only / path-filtered pushes). A legitimate repo
-    # state, NOT a verification failure — warn-only in BOTH modes, including
-    # --strict-remote, which upgrades "couldn't reach the server", not "the
-    # server legitimately had no gate run for us to check".
-    echo "  warn: check-runs found but none lock-named in last 10 commits — likely docs-only pushes; skipping app check"
+    # Exhaustion state 2: CI ran on recent commits but NOT ONE carried a
+    # lock-named check. DEFAULT mode treats this as a benign docs-only /
+    # path-filtered state (warn — onboarding ergonomics). Under --strict-remote
+    # it is DRIFT: strict mode's contract is "couldn't verify the source_app
+    # against the server = drift", and zero lock-named checks across 10 commits
+    # is indistinguishable from the required workflows being disabled, renamed,
+    # or broken — precisely what strict mode exists to catch. Unlike per-check
+    # `missing` (some gates ran, others are PR-only), this never fires on a
+    # healthy repo whose gates run on push: such a commit yields req_hits>0 and
+    # is accepted above, so upgrading it to drift does not break the mode.
+    if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+      echo "  DRIFT: check-runs found but none lock-named in last 10 commits — cannot verify source_app (--strict-remote)"
+      drift=1
+    else
+      echo "  warn: check-runs found but none lock-named in last 10 commits — likely docs-only pushes; skipping app check"
+    fi
     exit "$drift"
   fi
   # Exhaustion state 1 (no check-runs in 10 commits) OR an incomplete walk

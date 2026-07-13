@@ -186,8 +186,9 @@ RUN_ARGS=(--owner o --repo r)
 check "T3a state2 (runs, none lock-named) → warn-only default, exit 0" 0 \
   +"none lock-named in last 10 commits" -"DRIFT" -"using commit:"
 RUN_ARGS=(--owner o --repo r --strict-remote)
-check "T3b state2 under --strict-remote → still warn-only, exit 0" 0 \
-  +"none lock-named in last 10 commits" -"DRIFT"
+check "T3b state2 under --strict-remote → fail-closed DRIFT, exit 1" 1 \
+  +"DRIFT: check-runs found but none lock-named in last 10 commits" \
+  +"cannot verify source_app (--strict-remote)"
 
 # ── T4: 10 commits, no runs at all → state 1 (warn default / drift strict) ──
 make_lock 6; reset_mock
