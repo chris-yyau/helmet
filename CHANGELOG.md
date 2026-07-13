@@ -1,3 +1,10 @@
+## [1.22.7](https://github.com/chris-yyau/helmet/compare/v1.22.6...v1.22.7) (2026-07-13)
+
+
+### Bug Fixes
+
+* **scripts:** honest (c)-surface tally, exhaustion states, help + pin regex ([#73](https://github.com/chris-yyau/helmet/issues/73)) ([73c616f](https://github.com/chris-yyau/helmet/commit/73c616f9d4db0be0da8859b824a209d671088d96))
+
 ## [1.22.6](https://github.com/chris-yyau/helmet/compare/v1.22.5...v1.22.6) (2026-07-13)
 
 
