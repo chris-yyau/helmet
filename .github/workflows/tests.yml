@@ -31,6 +31,8 @@ jobs:
         run: ./scripts/bump-version.sh --check
       - name: Check template pin parity
         run: ./scripts/check-template-pins.sh
+      - name: Test required-checks drift detector
+        run: ./scripts/test-check-required-checks.sh
 
   commitlint:
     runs-on: ubuntu-latest
