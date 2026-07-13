@@ -19,13 +19,16 @@ on:
       - '**/requirements*.txt'
       - '**/Dockerfile'
       - '**/*.tf'
+      - '**/pyproject.toml'
+      - '**/uv.lock'
+      - '**/Cargo.lock'
+      - '**/Package.resolved'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+permissions: {}
 
 defaults:
   run:
@@ -62,7 +65,7 @@ jobs:
           # Fail-closed: if base SHA is unavailable, treat as security-relevant (run scanners)
           # rather than silently skipping. Errors here mean we can't determine the diff.
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
-            echo "::warning::Base SHA $BASE_SHA not available locally — running scanners (fail-closed)"
+            echo "::warning::Base SHA $BASE_SHA not available — running scanners (fail-closed)"
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -115,6 +118,8 @@ jobs:
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -139,6 +144,8 @@ jobs:
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -158,6 +165,8 @@ jobs:
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -177,6 +186,8 @@ jobs:
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -190,6 +201,10 @@ jobs:
       - name: Install zizmor
         run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan GitHub Actions workflows
+        # INTENTIONAL divergence from the SKILL.md template (--min-severity high --min-confidence high):
+        # helmet dogfoods the strict all-severity gate via .zizmor.yml; consumers get high-only to avoid
+        # onboarding friction. Sole entry in the shared divergence allowlist (RUN_ZIZMOR_INVOCATION).
+        # Mirrored comment lives in SKILL.md Section N.
         run: zizmor --config .zizmor.yml .github/workflows/
 
   reports:
@@ -218,3 +233,7 @@ jobs:
             echo "| checkov | $CHECKOV |"
             echo "| zizmor | $ZIZMOR |"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$TRIVY" == "failure" || "$SEMGREP" == "failure" || "$CHECKOV" == "failure" || "$ZIZMOR" == "failure" ]]; then
+            echo "::error::One or more security scanners failed"
+            exit 1
+          fi
