@@ -1823,39 +1823,7 @@ done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -p
 exit $status
 ```
 
-**Reports summary job** — add to security.yml for PR summary. Requires the `changes` detection job from Section N. Security Scanning Backstop:
-```yaml
-  reports:
-    if: always()
-    needs: [changes, trivy, semgrep, checkov, zizmor]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
-        with:
-          egress-policy: audit
-      - name: Write summary
-        env:
-          TRIVY: ${{ needs.trivy.result }}
-          SEMGREP: ${{ needs.semgrep.result }}
-          CHECKOV: ${{ needs.checkov.result }}
-          ZIZMOR: ${{ needs.zizmor.result }}
-        run: |
-          {
-            echo "## Security Backstop"
-            echo "| Scanner | Result |"
-            echo "|---------|--------|"
-            echo "| trivy | $TRIVY |"
-            echo "| semgrep | $SEMGREP |"
-            echo "| checkov | $CHECKOV |"
-            echo "| zizmor | $ZIZMOR |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$TRIVY" == "failure" || "$SEMGREP" == "failure" || "$CHECKOV" == "failure" || "$ZIZMOR" == "failure" ]]; then
-            echo "::error::One or more security scanners failed"
-            exit 1
-          fi
-```
+**Reports summary job** — add to security.yml for a PR step-summary that aggregates the four scanner results and fails if any scanner failed. It requires the `changes` detection job and references the four scanner jobs, so the canonical `reports:` block lives inline in the security.yml template in **Section N. Security Scanning Backstop** — copy it from there. (Not duplicated here: Section N is the single source, the same way the SHA-pin script is canonical in this section and Section N points back to it.)
 
 **`pull_request` over `pull_request_target`** — never use `pull_request_target` with untrusted code. All workflows use `pull_request`.
 
