@@ -1,3 +1,10 @@
+## [1.22.6](https://github.com/chris-yyau/helmet/compare/v1.22.5...v1.22.6) (2026-07-13)
+
+
+### Bug Fixes
+
+* **security:** sync live security.yml permissions/paths + pin release toolchain ([#72](https://github.com/chris-yyau/helmet/issues/72)) ([c2b9880](https://github.com/chris-yyau/helmet/commit/c2b9880c3e745586a46ebc3a1900d0e6501b2a3d)), closes [#67](https://github.com/chris-yyau/helmet/issues/67)
+
 ## [1.22.5](https://github.com/chris-yyau/helmet/compare/v1.22.4...v1.22.5) (2026-07-12)
 
 
