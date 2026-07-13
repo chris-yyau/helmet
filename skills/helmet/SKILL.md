@@ -1483,6 +1483,22 @@ Configure repo settings via API BEFORE deploying workflows. Without this, `allow
 ```bash
 OWNER="owner"
 REPO="repo"
+# Resolve the default branch up front — the branch-protection calls below build
+# paths from it (repos/.../branches/$DEFAULT_BRANCH/protection). Fail closed on a
+# failed or empty lookup so the script can't apply repo settings and THEN 404 on an
+# empty branch path, leaving the repo half-configured.
+DEFAULT_BRANCH=$(gh api "repos/$OWNER/$REPO" --jq '.default_branch') \
+  || { echo "ERROR: could not resolve default branch for $OWNER/$REPO" >&2; exit 1; }
+# The name is interpolated raw into the REST paths below (branches/$DEFAULT_BRANCH/
+# protection) — those are NOT URL-encoded. Refuse empty names, and names with
+# characters that would need encoding ('/', '%', '#', spaces, …), rather than
+# silently addressing the wrong path after repo settings were already applied.
+# Branches with such names are rare as a default; encode manually if you hit this.
+case "$DEFAULT_BRANCH" in
+  ''|*[!A-Za-z0-9._-]*)
+    echo "ERROR: default branch '$DEFAULT_BRANCH' is empty or needs URL-encoding for the API paths below — handle manually" >&2
+    exit 1 ;;
+esac
 
 # ── Repo settings (merge, auto-merge, branch cleanup) ──
 gh api "repos/$OWNER/$REPO" -X PATCH \
@@ -1778,31 +1794,7 @@ jobs:
     timeout-minutes: 10  # Always set — no runaway jobs
 ```
 
-**Security workflow uses `paths` (not `paths-ignore`)** — only triggers when security-relevant files change:
-```yaml
-on:
-  pull_request:
-    paths:
-      - '.github/**'
-      - '**/*.sh'
-      - '**/*.js'
-      - '**/*.py'
-      - '**/*.yml'
-      - 'package.json'
-      - '**/package-lock.json'
-      - '**/pnpm-lock.yaml'
-      - '**/yarn.lock'
-      - '**/go.sum'
-      - '**/requirements*.txt'
-      - '**/Dockerfile'
-      - '**/*.tf'
-      - '**/pyproject.toml'
-      - '**/uv.lock'
-      - '**/Cargo.lock'
-      - '**/Package.resolved'
-      # ⚠️ Do NOT add paths-ignore here — combining paths + paths-ignore
-      # on the same trigger is undefined behavior in GitHub Actions.
-```
+**Security workflow path filtering is split** — the `push` trigger carries a `paths:` filter (no waste on docs-only pushes to `main`), while the `pull_request` trigger has **no** workflow-level `paths:` filter. If any scanner job is a required status check, a PR-side `paths:` filter would stop the workflow from starting on unmatched PRs — GitHub then reports the required check as absent and blocks merge. Instead a `changes` detection job does job-level gating on PRs. See **Section N. Security Scanning Backstop** for the full trigger + `changes`-job pattern and the canonical `paths:` list. (Do NOT add `paths-ignore` alongside `paths` on one trigger — undefined behavior in GitHub Actions.)
 
 **SHA pin verification script** (`.github/scripts/check-pinned-uses.sh`):
 
@@ -1839,6 +1831,10 @@ exit $status
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
       - name: Write summary
         env:
           TRIVY: ${{ needs.trivy.result }}
@@ -2300,7 +2296,6 @@ export default {
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    "@semantic-release/changelog",
     ["@semantic-release/github", {
       "successComment": false,
       "failTitle": false
@@ -2308,6 +2303,8 @@ export default {
   ]
 }
 ```
+
+Release notes are published to GitHub Releases (`release-notes-generator` + `@semantic-release/github`), so no committed `CHANGELOG.md` — `@semantic-release/changelog` and `@semantic-release/git` are intentionally omitted (a committed changelog requires `@semantic-release/git` pushing to protected `main`, which needs a push token that can bypass branch protection). helmet's own `release.yml` additionally commits `CHANGELOG.md` + version manifests via `@semantic-release/git` — see it for the full pattern if you need a committed changelog.
 
 Add `@semantic-release/npm` plugin if publishing to npm. Add `@semantic-release/exec` for custom release scripts (e.g., `cargo publish`).
 
@@ -2325,6 +2322,10 @@ permissions: {}
 defaults:
   run:
     shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -2344,11 +2345,13 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 20
+          node-version: 22  # semantic-release v25 requires Node ^22.14 || >=24.10; keep in lockstep with the pinned npx set below
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx -y -p semantic-release -p @semantic-release/changelog -p @semantic-release/github semantic-release
+        # Pin the semantic-release toolchain — unpinned npx resolves to latest at run time (supply-chain drift).
+        # Refresh cadence tracked in issue #67. Node pin above must satisfy these engines.
+        run: npx -y -p semantic-release@25.0.6 -p @semantic-release/github@12.0.9 semantic-release
 ```
 
 **IMPORTANT:**
@@ -2362,6 +2365,7 @@ jobs:
   commitlint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -2389,11 +2393,7 @@ jobs:
         run: npx commitlint --from "$BASE_SHA" --to "$HEAD_SHA"
 ```
 
-**Step 5: Dev dependencies** — add to the repo:
-
-```bash
-npm install -D semantic-release @semantic-release/changelog @semantic-release/github @commitlint/cli @commitlint/config-conventional
-```
+**Step 5: No dev dependencies required** — CI installs everything via npx / `npm install --no-save` (Steps 3–4); the repo is deliberately lockfile-less, so there is no `npm install -D` step.
 
 For non-Node repos (Go, Rust, Python, Swift), create a minimal root `package.json`:
 
@@ -2917,6 +2917,7 @@ on:
       - '**/*.js'
       - '**/*.py'
       - '**/*.yml'
+      - '**/*.yaml'
       - 'package.json'
       - '**/package-lock.json'
       - '**/pnpm-lock.yaml'
@@ -3110,6 +3111,11 @@ jobs:
       - name: Install zizmor
         run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan GitHub Actions workflows
+        # INTENTIONAL divergence: this template ships the consumer default
+        # (--min-severity high --min-confidence high) to avoid onboarding friction.
+        # helmet's own security.yml dogfoods the strict all-severity gate via
+        # `zizmor --config .zizmor.yml`. Sole entry in the shared divergence
+        # allowlist (RUN_ZIZMOR_INVOCATION); mirrored comment lives in helmet's security.yml.
         run: zizmor --min-severity high --min-confidence high .github/workflows/
 
   reports:
@@ -3118,6 +3124,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
       - name: Write summary
         env:
           TRIVY: ${{ needs.trivy.result }}
@@ -3885,7 +3895,7 @@ done
 - **`pip install` over GitHub Actions for semgrep/checkov/zizmor** — avoids additional action SHAs to maintain; pip install is reliable on ubuntu runners; pinact/Dependabot only track actions, not pip packages — accepted tradeoff for simplicity
 - **semgrep `p/security-audit` ruleset in CI** — matches seatbelt's default for consistency. `--error` flag fails on any finding. `--exclude tests` avoids false positives on test fixtures with intentional bad patterns
 - **GitGuardian covers secrets in CI, so no gitleaks CI job** — GitGuardian GitHub App runs on every push/PR with a different engine. Two-layer secrets detection: gitleaks (local/seatbelt) + GitGuardian (CI). No need for a third layer
-- **Workflow hardening patterns mandatory on all workflows (added 2026-03-27)** — `paths-ignore` (skip docs), `concurrency` (cancel stale), `permissions` (top-level least-privilege), `defaults.run.shell: bash` (explicit), `timeout-minutes` (every job). Security workflow uses `paths` (positive match) instead of `paths-ignore`. **`scorecard.yml` MUST NOT declare top-level `defaults:` or `env:` blocks** — `ossf/scorecard-action`'s publish verification rejects them with `workflow contains global env vars or defaults` (HTTP 400), failing the job even though scoring succeeds. The B0 audit table's `defaults.run.shell: bash` rule explicitly carves out this file; do not "fix" the missing `defaults:` block on scorecard.yml. Ref: https://github.com/ossf/scorecard-action#workflow-restrictions
+- **Workflow hardening patterns mandatory on all workflows (added 2026-03-27)** — `paths-ignore` (skip docs), `concurrency` (cancel stale), `permissions` (top-level least-privilege), `defaults.run.shell: bash` (explicit), `timeout-minutes` (every job). Security workflow uses `paths` on its **push** trigger only (positive match, not `paths-ignore`); its `pull_request` trigger is unfiltered, with a `changes` job doing job-level gating (see Section N). **`scorecard.yml` MUST NOT declare top-level `defaults:` or `env:` blocks** — `ossf/scorecard-action`'s publish verification rejects them with `workflow contains global env vars or defaults` (HTTP 400), failing the job even though scoring succeeds. The B0 audit table's `defaults.run.shell: bash` rule explicitly carves out this file; do not "fix" the missing `defaults:` block on scorecard.yml. Ref: https://github.com/ossf/scorecard-action#workflow-restrictions
 - **`pull_request` over `pull_request_target`** — never run untrusted PR code with write permissions. All workflows use `pull_request`
 - **External `check-pinned-uses.sh` over inline grep** — handles quoted `uses:` values, reusable across repos, easier to test. Deploy to `.github/scripts/`. Exempt local refs (`./`) and `docker://`
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
@@ -3898,7 +3908,7 @@ done
 - **Squash-only merges** — `allow_squash_merge: true`, merge commits and rebase disabled. Clean single-commit PRs, linear history. `allow_update_branch: true` suggests keeping PRs current. `delete_branch_on_merge: true` auto-cleans merged branches
 - **Auto-merge enabled + branch protection required** — lets Dependabot PRs merge automatically after CI passes without manual intervention. MUST be paired with branch protection requiring status checks — without it, auto-merge merges immediately with no CI gate. `enforce_admins: false` for solo dev escape hatch; `strict: true` requires branch to be up-to-date before merge
 - **Actions permissions must be `selected` not `local_only`** — `allowed_actions: "local_only"` silently causes `startup_failure` on all workflows using external actions (no logs, no jobs, 0s duration). Configure `allowed_actions: selected` with `github_owned_allowed: true` + explicit third-party patterns BEFORE deploying workflows. Verify with `gh api repos/OWNER/REPO/actions/permissions`. Added 2026-03-27
-- **Security workflow uses `paths` only, no `paths-ignore`** — combining `paths` + `paths-ignore` on the same event trigger may cause GitHub to reject the workflow with a generic "workflow file issue" error. Since positive `paths` matching already excludes unmatched extensions (like `.md`), `paths-ignore` is redundant. Added 2026-03-27
+- **Security workflow `paths` filter is push-trigger-only** — the `push` trigger uses `paths` (positive match; never `paths-ignore`, since combining the two on one trigger may cause GitHub to reject the workflow with a generic "workflow file issue" error). The `pull_request` trigger is intentionally unfiltered so required scanner checks always report — a `changes` detection job gates the scanner jobs at job level instead (see Section N). Added 2026-03-27
 - **Reports job uses env vars for `${{ needs.*.result }}`** — zizmor flags inline `${{ needs.job.result }}` expressions as template-injection (low confidence, false positive — values are GitHub-internal). Using `env:` block satisfies the audit with zero behavioral change. Added 2026-03-27
 
 ---
