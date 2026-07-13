@@ -87,7 +87,11 @@ while [[ $# -gt 0 ]]; do
       fi
       REPO="$2"; shift 2 ;;
     -h|--help)
-      sed -n '3,42p' "$0" | sed 's/^# \{0,1\}//'
+      # Marker-based range, not fixed line numbers (which rot as the header
+      # grows/shrinks and silently truncated the Exit-codes section). Print
+      # from the title comment through the line just before `set -euo`, drop
+      # that trailing `set` line, then strip the `# ` comment prefix.
+      sed -n '/^# check-required-checks/,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) echo "error: unknown arg '$1'" >&2; exit 2 ;;
@@ -178,7 +182,9 @@ drift=0
 # global `drift` flag still aggregates all surfaces for the script's exit
 # code — these locals only gate the per-surface ok messages.
 a_drift=0
-c_drift=0
+# (c) no longer needs a per-surface flag — its honest-summary counters
+# (verified/mismatch/missing) subsume the old c_drift, so the block gates its
+# all-clear on a positive tally rather than "nothing flagged drift".
 
 # ────────────────────────────────────────────────────────────────────
 # (a) Lock vs workflow source — every required entry's workflow file
@@ -620,25 +626,86 @@ fi
 # ────────────────────────────────────────────────────────────────────
 echo "[c] Checking lock source_app against latest check-run reporters…"
 
-# Walk back through recent commits to find one that actually ran CI.
-# Release commits often use `[skip ci]` and have no check-runs, which is
-# expected — keep stepping back until we find a real commit.
+lock_count=$(jq -r '.required | length' "$LOCK")
+
+# Exhaustion state 3: nothing to verify. An empty lock declares no source_app
+# contract, so there is no commit worth fetching — skip cleanly rather than
+# walk the API and then print an all-clear that positively verified zero
+# checks. Exit path unchanged (carries whatever drift (a)/(d)/(b) set).
+if [[ "$lock_count" -eq 0 ]]; then
+  echo "  ok: no required checks declared — nothing to verify"
+  exit "$drift"
+fi
+
+# Walk back through recent commits for one that actually exercised the gates.
+# A commit is usable evidence ONLY if it carries ≥1 check-run whose name
+# matches a lock-required name — a commit whose runs are all third-party
+# (CodeRabbit, CodeScene) or absent tells us nothing about the source_app
+# contract, and accepting it would let the per-check loop emit "missing" for
+# every gate and still print the all-clear (the fail-open this fixes). Release
+# commits use `[skip ci]` (no runs); docs-only / path-filtered pushes run some
+# integrations but none of our gates. `any_runs_seen` distinguishes the two
+# exhaustion states below: "server ran no CI at all" vs "CI ran but never our
+# gates" — different severity.
+req_names=$(jq -c '[.required[].name]' "$LOCK")
 runs_json=""
 sha=""
+any_runs_seen=0
+# `api_error` records whether ANY listing/check-runs call failed mid-walk.
+# It gates the benign state-2 skip below: a partial walk (some commits fetched,
+# then a network/rate-limit/auth failure) must NOT be reported as "CI ran but
+# nothing lock-named" — that verification was incomplete, so --strict-remote
+# has to treat it as drift, not a clean pass. Both fetches capture their exit
+# status directly (via `if !`) instead of the old `|| true`, which discarded
+# it and let a failure look identical to "no runs".
+api_error=0
 for offset in 0 1 2 3 4 5 6 7 8 9; do
-  candidate=$(gh api "repos/$OWNER/$REPO/commits?sha=$default_branch&per_page=1&page=$((offset+1))" \
-    --jq '.[0].sha' 2>/dev/null || true)
+  # A `null` sha is a page past the last commit (normal end-of-history), NOT an
+  # error — only a non-zero gh exit sets api_error.
+  if ! candidate=$(gh api "repos/$OWNER/$REPO/commits?sha=$default_branch&per_page=1&page=$((offset+1))" \
+    --jq '.[0].sha' 2>/dev/null); then
+    api_error=1
+    continue
+  fi
   [[ -z "$candidate" || "$candidate" == "null" ]] && continue
   # The check-runs endpoint paginates at 100 results per page. Repos with many
   # integrations or repeated CI re-runs on the same commit can exceed that, so
   # without --paginate the script emits "warn: no check-run named X" for items
   # past page 1 instead of detecting real drift. --paginate streams items,
-  # which `jq -sc '.'` then collapses back into a single JSON array.
-  rj=$(gh api "repos/$OWNER/$REPO/commits/$candidate/check-runs" --paginate \
-         --jq '.check_runs[]' 2>/dev/null \
-       | jq -sc '.' || true)
-  count=$(echo "$rj" | jq 'length' 2>/dev/null || echo 0)
-  if [[ "${count:-0}" -gt 0 ]]; then
+  # which `jq -sc '.'` then collapses back into a single JSON array. Capture
+  # gh's exit status separately from the jq reshape so a fetch failure sets
+  # api_error rather than masquerading as a clean empty result.
+  if ! raw=$(gh api "repos/$OWNER/$REPO/commits/$candidate/check-runs" --paginate \
+               --jq '.check_runs[]' 2>/dev/null); then
+    api_error=1
+    continue
+  fi
+  rj=$(printf '%s' "$raw" | jq -sc '.' 2>/dev/null || echo '[]')
+  count=$(printf '%s' "$rj" | jq 'length' 2>/dev/null || echo 0)
+  [[ "${count:-0}" -gt 0 ]] || continue
+  any_runs_seen=1
+  # Accept only a commit that ran ≥1 lock-named check. `index($n)` returns 0
+  # for the first element — 0 is truthy in jq, so `select` keeps a name found
+  # at index 0. Guard jq errors with `|| echo 0` so a malformed run array
+  # keeps the walk going rather than aborting under `set -e`.
+  #
+  # DELIBERATE single-commit model (design-reviewed; see the audit-fix plan's
+  # "Out of scope" note): we verify source_app against ONE accepted commit, so
+  # a required check that did not run on it is reported `missing` (warn-only,
+  # incl. --strict-remote) rather than drift. This is REQUIRED, not lax: the
+  # lock legitimately mixes push-triggered gates (scanners) with PR-only gates
+  # (version-drift, commitlint) that NEVER post on a main-branch commit —
+  # demanding full per-commit coverage would make --strict-remote drift on
+  # every main commit and render the mode useless. Known, accepted limitation
+  # of this model: a source_app takeover of a check that ran on a *non-accepted*
+  # commit but is missing on the accepted one is not caught here. Mitigation:
+  # the honest summary below reports the exact `missing` (unverified) count, so
+  # the blind spot is visible, never silently green. Upgrade path if this
+  # becomes a real threat: aggregate the most-recent run per lock name across
+  # the whole 10-commit window instead of a single accepted commit.
+  req_hits=$(printf '%s' "$rj" | jq --argjson names "$req_names" \
+    '[.[] | select(.name as $n | $names | index($n))] | length' 2>/dev/null || echo 0)
+  if [[ "${req_hits:-0}" -gt 0 ]]; then
     runs_json="$rj"
     sha="$candidate"
     break
@@ -646,11 +713,39 @@ for offset in 0 1 2 3 4 5 6 7 8 9; do
 done
 
 if [[ -z "$runs_json" ]]; then
-  # Same fail-closed ladder as (b): under --strict-remote, "couldn't fetch
-  # any check-runs from the last 10 commits" means we can't verify the
-  # source-app contract — that's drift, not an info skip.
+  # State 2 is claimable ONLY when the walk completed cleanly (api_error == 0)
+  # AND we positively saw ≥1 check-run that simply wasn't lock-named. A walk cut
+  # short by an API failure is NOT a benign "docs-only pushes" state — it's
+  # incomplete verification, so it falls through to the fail-closed ladder.
+  if [[ "$any_runs_seen" -eq 1 && "$api_error" -eq 0 ]]; then
+    # Exhaustion state 2: CI ran on recent commits but NOT ONE carried a
+    # lock-named check. DEFAULT mode treats this as a benign docs-only /
+    # path-filtered state (warn — onboarding ergonomics). Under --strict-remote
+    # it is DRIFT: strict mode's contract is "couldn't verify the source_app
+    # against the server = drift", and zero lock-named checks across 10 commits
+    # is indistinguishable from the required workflows being disabled, renamed,
+    # or broken — precisely what strict mode exists to catch. Unlike per-check
+    # `missing` (some gates ran, others are PR-only), this never fires on a
+    # healthy repo whose gates run on push: such a commit yields req_hits>0 and
+    # is accepted above, so upgrading it to drift does not break the mode.
+    if [[ "$STRICT_REMOTE" -eq 1 ]]; then
+      echo "  DRIFT: check-runs found but none lock-named in last 10 commits — cannot verify source_app (--strict-remote)"
+      drift=1
+    else
+      echo "  warn: check-runs found but none lock-named in last 10 commits — likely docs-only pushes; skipping app check"
+    fi
+    exit "$drift"
+  fi
+  # Exhaustion state 1 (no check-runs in 10 commits) OR an incomplete walk
+  # (api_error). Same fail-closed ladder as (b): under --strict-remote,
+  # "couldn't confirm the source_app contract" is drift, not an info skip.
+  # Default stays warn (onboarding ergonomics).
   if [[ "$STRICT_REMOTE" -eq 1 ]]; then
-    echo "  DRIFT: no recent commit (last 10) had check-runs — cannot verify source_app (--strict-remote)"
+    if [[ "$api_error" -eq 1 ]]; then
+      echo "  DRIFT: check-run fetch failed during the last-10-commits walk — cannot verify source_app (--strict-remote)"
+    else
+      echo "  DRIFT: no recent commit (last 10) had check-runs — cannot verify source_app (--strict-remote)"
+    fi
     drift=1
   else
     echo "  warn: no recent commit (last 10) had check-runs — skipping app check"
@@ -659,6 +754,31 @@ if [[ -z "$runs_json" ]]; then
 fi
 echo "  using commit: ${sha:0:7}"
 
+# Fail-closed on an incomplete walk even when a commit WAS accepted. The walk
+# runs newest→oldest and breaks on acceptance, so any api_error recorded before
+# the break is on a commit NEWER than the accepted one — one we could not
+# examine. That newer commit is exactly where a just-landed source_app takeover
+# would first appear, so accepting the older commit could miss it. Under
+# --strict-remote that unverifiable gap is drift; the per-check tally below
+# still prints for context. (Default mode stays lenient — transient API blips
+# shouldn't fail an onboarding run.)
+if [[ "$STRICT_REMOTE" -eq 1 && "$api_error" -eq 1 ]]; then
+  echo "  DRIFT: a newer commit's check-runs could not be fetched — accepted commit ${sha:0:7} may not reflect current source_app state (--strict-remote)"
+  drift=1
+fi
+
+# Per-check verification with an honest tally. Three terminal states per lock
+# entry:
+#   verified — a run posted under this name AND its app.slug == source_app
+#   mismatch — a run posted but app.slug differs → DRIFT (another app took
+#              over / is spoofing the name); counted and shown
+#   missing  — no run posted under this name on the chosen commit → warn-only
+#              in BOTH modes (routine for PR-only checks on a main commit;
+#              --strict-remote does NOT upgrade this — see the --strict-remote
+#              comment block near the top of the arg parser)
+verified=0
+mismatch=0
+missing=0
 while IFS= read -r entry; do
   name=$(echo "$entry" | jq -r '.name')
   expected_app=$(echo "$entry" | jq -r '.source_app')
@@ -668,18 +788,28 @@ while IFS= read -r entry; do
   ')
   if [[ "$actual" == "null" || -z "$actual" ]]; then
     echo "  warn: no check-run named '$name' on HEAD — skipping app check"
+    missing=$((missing + 1))
     continue
   fi
   actual_slug=$(echo "$actual" | jq -r '.app.slug // "unknown"')
   if [[ "$actual_slug" != "$expected_app" ]]; then
     echo "  DRIFT: '$name' expected source_app='$expected_app' but reported by '$actual_slug'"
     drift=1
-    c_drift=1
+    mismatch=$((mismatch + 1))
+  else
+    verified=$((verified + 1))
   fi
 done < <(jq -c '.required[]' "$LOCK")
 
-if [[ "$c_drift" -eq 0 ]]; then
+# Honest summary. The all-clear is earned ONLY when every lock entry was
+# positively verified and nothing mismatched — never off the back of a commit
+# where zero required names actually posted. Otherwise state the real tally so
+# a warn-only "missing" can't masquerade as a clean pass. Exit code is driven
+# by `drift` (mismatch sets it; missing does not), unchanged by this line.
+if [[ "$verified" -eq "$lock_count" && "$mismatch" -eq 0 ]]; then
   echo "  ok: every required check is reported by its expected source app"
+else
+  echo "  verified $verified of $lock_count source_apps; missing $missing (warn-only); mismatch $mismatch (drift)"
 fi
 
 exit "$drift"

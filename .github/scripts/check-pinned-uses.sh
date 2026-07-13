@@ -14,7 +14,7 @@ while IFS= read -r -d '' file; do
     case "$ref" in
       ./*|docker://*) continue ;;  # Local refs + docker:// exempt
     esac
-    if [[ ! "$ref" =~ @[0-9a-f]{40}$ ]]; then
+    if [[ ! "$ref" =~ ^[^@]+@[0-9a-f]{40}$ ]]; then
       echo "::error file=$file,line=$line_no::Unpinned or invalid action/workflow ref: $ref"
       status=1
     fi
