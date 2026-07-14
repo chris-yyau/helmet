@@ -182,12 +182,20 @@ extract_section_n_block() {
 # (indentation change, list-item `- run:` vs block-mapping `run:`) still differs after
 # normalization and is caught as drift. Any zizmor invocation OTHER than the two sanctioned
 # variants fails to match → 0 sentinels → the count guard below fails closed.
-# Deliberately does NO comment/quote/heredoc/block-scalar handling. Because the two documents
-# are byte-identical there is nothing to strip — which is precisely why this check needs no
-# YAML/shell parser and cannot be fooled by adversarial comment constructs (multiline quoted
-# strings with `#`, `|2-` block indicators, folded scalars, …). The cost: a comment edited on
-# only one side reads as drift. That is intended — the installed template must stay in lockstep
-# with live, comments and all; the check tells you exactly what to re-sync.
+# Deliberately does NO comment/quote/heredoc/block-scalar parsing: the two documents are kept
+# byte-identical, so there is nothing to strip and no YAML/shell structure to interpret — every
+# line except the sentinel is compared verbatim.
+# SCOPE (what this does and does NOT guarantee): it is a DRIFT detector between two
+# maintainer-controlled files — live security.yml vs the shipped template — NOT a guarantee that
+# the sentinel line is a functioning zizmor step. The substitution is content-based, so a line
+# that literally reads `<ws>(- )?run: zizmor <sanctioned>` collapses wherever it sits (including
+# as payload inside a `run: |` block). A maintainer who identically edits BOTH files to hide a
+# non-functional scanner is therefore out of scope — CI actually running the zizmor job is that
+# control, not this parity check. Within scope (the real job: catch accidental live↔template
+# divergence) it is exact.
+# The cost of the parser-free design: a comment edited on only one side reads as drift. That is
+# intended — the installed template must stay in lockstep with live, comments and all; the check
+# tells you exactly what to re-sync.
 normalize_doc() {
   sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --config \\.zizmor\\.yml \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@" \
     | sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --min-severity high --min-confidence high \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@"
@@ -225,8 +233,12 @@ content_hash_check() {
     return 2
   fi
 
-  live_n=$(normalize_doc < "$live_f")
-  tmpl_n=$(printf '%s\n' "$blk" | normalize_doc)
+  # Capture normalize_doc's status EXPLICITLY: content_hash_check is called from an `||` (main,
+  # below), so `set -e` is disabled throughout — an unchecked `$(...)` that fails but emits
+  # nonempty output would slip past the empty-check into the compare. `|| return 2` is explicit
+  # control flow (works regardless of errexit), so a broken normalization fails closed.
+  live_n=$(normalize_doc < "$live_f") || { echo "ERROR: normalization of live security.yml failed — fail-closed" >&2; return 2; }
+  tmpl_n=$(printf '%s\n' "$blk" | normalize_doc) || { echo "ERROR: normalization of the Section N template failed — fail-closed" >&2; return 2; }
   [[ -n "$live_n" && -n "$tmpl_n" ]] || { echo "ERROR: a normalized document is empty (normalization broke) — fail-closed" >&2; return 2; }
 
   # The allowlist has exactly one entry, so its sentinel MUST appear exactly once per
