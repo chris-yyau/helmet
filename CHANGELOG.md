@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/chris-yyau/helmet/compare/v1.22.7...v1.23.0) (2026-07-14)
+
+
+### Features
+
+* **scripts:** dissolve [#66](https://github.com/chris-yyau/helmet/issues/66) content-parity parser via byte-identical convergence ([#77](https://github.com/chris-yyau/helmet/issues/77)) ([99e7f13](https://github.com/chris-yyau/helmet/commit/99e7f13baa387a8d61215c834779be159ac0662c))
+
 ## [1.22.7](https://github.com/chris-yyau/helmet/compare/v1.22.6...v1.22.7) (2026-07-13)
 
 
