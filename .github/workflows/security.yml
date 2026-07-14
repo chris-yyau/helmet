@@ -1,10 +1,11 @@
 name: Security
 
 on:
-  pull_request:
+  pull_request:                     # No path filter — workflow always starts on PRs
+                                    # (scanner jobs skip via if: when not needed)
   push:
     branches: [main]
-    paths:
+    paths:                          # Push trigger keeps path filter (no required-check issue)
       - '.github/**'
       - '**/*.sh'
       - '**/*.js'
@@ -35,6 +36,9 @@ defaults:
     shell: bash
 
 jobs:
+  # Detect whether this PR/push touches security-relevant files.
+  # Scanner jobs below skip via `if:` when false. GitHub treats skipped jobs as
+  # passing for required status checks — so scanners can safely be required.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -49,7 +53,7 @@ jobs:
           egress-policy: audit
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 0
+          fetch-depth: 0              # Need full history to diff against base
           persist-credentials: false
       - name: Detect security-relevant changes
         id: filter
@@ -62,8 +66,8 @@ jobs:
             echo "security=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Fail-closed: if base SHA is unavailable, treat as security-relevant (run scanners)
-          # rather than silently skipping. Errors here mean we can't determine the diff.
+          # Fail-closed: if base SHA unavailable (fork PRs, shallow checkouts),
+          # run scanners rather than silently skipping.
           if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
             echo "::warning::Base SHA $BASE_SHA not available — running scanners (fail-closed)"
             echo "security=true" >> "$GITHUB_OUTPUT"
@@ -201,10 +205,10 @@ jobs:
       - name: Install zizmor
         run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan GitHub Actions workflows
-        # INTENTIONAL divergence from the SKILL.md template (--min-severity high --min-confidence high):
-        # helmet dogfoods the strict all-severity gate via .zizmor.yml; consumers get high-only to avoid
-        # onboarding friction. Sole entry in the shared divergence allowlist (RUN_ZIZMOR_INVOCATION).
-        # Mirrored comment lives in SKILL.md Section N.
+        # INTENTIONAL divergence (sole entry in the shared divergence allowlist, RUN_ZIZMOR_INVOCATION):
+        # helmet's own security.yml dogfoods the strict all-severity gate (zizmor --config .zizmor.yml);
+        # the installed template ships the consumer default (--min-severity high --min-confidence high)
+        # to avoid onboarding friction. Only the run: line below differs between live and template.
         run: zizmor --config .zizmor.yml .github/workflows/
 
   reports:

@@ -140,6 +140,130 @@ report() {
   return "$rc"
 }
 
+# --- whole-document content parity (issue #66) ---------------------------------------
+# The pin check above compares ONLY `uses:` SHA pins. It is blind to drift in the GATING
+# LOGIC — `if:` / `needs:` / triggers / `paths:` / run-block wording — between live
+# security.yml and the SKILL.md Section N fenced template (the copy helmet installs into
+# consumers). Those two are maintained BYTE-IDENTICAL except one sanctioned divergence — the
+# zizmor invocation (helmet dogfoods the strict all-severity gate via `--config .zizmor.yml`;
+# the template ships the consumer `--min-severity high --min-confidence high` default). That
+# single line is collapsed to a sentinel and everything else is compared verbatim, so ANY
+# other drift is caught — with NO YAML/shell parsing that adversarial input could fool.
+ZIZMOR_SENTINEL='SENTINEL_RUN_ZIZMOR_INVOCATION'
+
+# Extract the single ```yaml fenced block inside "#### N. Security Scanning Backstop",
+# bounded by the next "**Required file:**" line OR the next "#### " heading. awk exits 3
+# if the region holds anything other than EXACTLY one such block (0 or >1) — fail-closed.
+extract_section_n_block() {
+  awk '
+    /^#### N\. Security Scanning Backstop/ { inN=1; next }
+    inN && (/^\*\*Required file:\*\*/ || /^#### /) { inN=0 }
+    inN && /^```yaml[[:space:]]*$/ && !fence { fence=1; nb++; next }
+    inN && fence && /^```[[:space:]]*$/ { fence=0; next }
+    inN && fence { print }
+    # Fail-closed on 0/>1 blocks OR an UNCLOSED fence (fence left open at EOF/region end).
+    END { if (nb != 1 || fence != 0) exit 3 }
+  ' "$1"
+}
+
+# Normalize a workflow document for whole-document comparison (reads stdin). Live security.yml
+# and the SKILL.md Section N template are kept BYTE-IDENTICAL except the sanctioned zizmor
+# divergence, so the only normalization needed is to collapse that one line to a sentinel;
+# everything else — comments included — already compares equal. (Command substitution at the
+# call site also strips trailing newlines, so a difference of trailing blank lines alone is
+# ignored — benign: blank lines carry no gating logic.)
+# TWO substitutions, one per zizmor variant — NOT a `(a|b)` alternation: BSD and GNU sed
+# disagree on `\|`, and a broken alternation would silently fail to collapse and read a CLEAN
+# tree as drift (a false positive that blocks every PR). Each is ANCHORED to a WHOLE run-command
+# line (`^<ws>(- )?run: zizmor … <ws>$`) and collapses ONLY the command text to the sentinel,
+# PRESERVING the matched `<indent>(- )?run: ` prefix via a backreference. So (a) a decoy that
+# merely embeds the `run: zizmor …` substring in a larger scalar, comment, or quoted string
+# cannot manufacture the sentinel the count guard expects, and (b) a STRUCTURAL move of the step
+# (indentation change, list-item `- run:` vs block-mapping `run:`) still differs after
+# normalization and is caught as drift. Any zizmor invocation OTHER than the two sanctioned
+# variants fails to match → 0 sentinels → the count guard below fails closed.
+# Deliberately does NO comment/quote/heredoc/block-scalar parsing: the two documents are kept
+# byte-identical, so there is nothing to strip and no YAML/shell structure to interpret — every
+# line except the sentinel is compared verbatim.
+# SCOPE (what this does and does NOT guarantee): it is a DRIFT detector between two
+# maintainer-controlled files — live security.yml vs the shipped template — NOT a guarantee that
+# the sentinel line is a functioning zizmor step. The substitution is content-based, so a line
+# that literally reads `<ws>(- )?run: zizmor <sanctioned>` collapses wherever it sits (including
+# as payload inside a `run: |` block). A maintainer who identically edits BOTH files to hide a
+# non-functional scanner is therefore out of scope — CI actually running the zizmor job is that
+# control, not this parity check. Within scope (the real job: catch accidental live↔template
+# divergence) it is exact.
+# The cost of the parser-free design: a comment edited on only one side reads as drift. That is
+# intended — the installed template must stay in lockstep with live, comments and all; the check
+# tells you exactly what to re-sync.
+normalize_doc() {
+  sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --config \\.zizmor\\.yml \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@" \
+    | sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --min-severity high --min-confidence high \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@"
+}
+
+# content_hash_check LIVE_SECURITY_YML SKILL_MD
+#   0 = content parity;  1 = drift;  2 = setup/format error (fail-closed).
+content_hash_check() {
+  local live_f="$1" skill_f="$2" blk lrc=0 live_n tmpl_n ls ts
+  [[ -r "$live_f"  ]] || { echo "ERROR: cannot read $live_f (fail-closed)"  >&2; return 2; }
+  [[ -r "$skill_f" ]] || { echo "ERROR: cannot read $skill_f (fail-closed)" >&2; return 2; }
+
+  blk=$(extract_section_n_block "$skill_f") || lrc=$?
+  if [[ "$lrc" -ne 0 ]]; then
+    echo "ERROR: Section N must hold exactly one \`\`\`yaml block in $skill_f (found 0 or >1) — fail-closed" >&2
+    return 2
+  fi
+  [[ -n "$blk" ]] || { echo "ERROR: extracted an empty Section N template — fail-closed" >&2; return 2; }
+
+  # Reserved-token guard: the sentinel is a synthetic internal token that must NEVER appear
+  # literally in a real workflow/template. If it did, a planted `run: <SENTINEL>` line would
+  # already carry the sentinel BEFORE substitution — colluding with the real command's collapse
+  # to fake the per-side count of 1 and let a broken Section N compare equal. Fail closed on any
+  # literal occurrence in either raw source (grep -F: fixed string, not a regex).
+  # Capture grep's exit EXPLICITLY rather than `if`-testing a pipe: under `set -o pipefail` a
+  # `printf | grep -q` writer can take SIGPIPE when grep short-circuits on a match, making the
+  # pipeline nonzero and reading a real hit as a MISS (fail-OPEN). A here-string has no writer to
+  # signal; and treating any non-1 exit (0 = found, ≥2 = grep read error) as "present or
+  # unverifiable" keeps it fail-closed. `$live_f` is pre-checked readable; `-F` has no regex.
+  local live_tok=0 tmpl_tok=0
+  grep -qF "$ZIZMOR_SENTINEL" "$live_f"  || live_tok=$?
+  grep -qF "$ZIZMOR_SENTINEL" <<< "$blk" || tmpl_tok=$?
+  if [[ "$live_tok" != 1 || "$tmpl_tok" != 1 ]]; then
+    echo "ERROR: reserved sentinel token '$ZIZMOR_SENTINEL' present or unverifiable in a source document — fail-closed" >&2
+    return 2
+  fi
+
+  # Capture normalize_doc's status EXPLICITLY: content_hash_check is called from an `||` (main,
+  # below), so `set -e` is disabled throughout — an unchecked `$(...)` that fails but emits
+  # nonempty output would slip past the empty-check into the compare. `|| return 2` is explicit
+  # control flow (works regardless of errexit), so a broken normalization fails closed.
+  live_n=$(normalize_doc < "$live_f") || { echo "ERROR: normalization of live security.yml failed — fail-closed" >&2; return 2; }
+  tmpl_n=$(printf '%s\n' "$blk" | normalize_doc) || { echo "ERROR: normalization of the Section N template failed — fail-closed" >&2; return 2; }
+  [[ -n "$live_n" && -n "$tmpl_n" ]] || { echo "ERROR: a normalized document is empty (normalization broke) — fail-closed" >&2; return 2; }
+
+  # The allowlist has exactly one entry, so its sentinel MUST appear exactly once per
+  # side — 0 (line changed/removed) or >1 (duplicated) makes parity undecidable → fail-closed.
+  # This is a SECONDARY guard: the whole-document compare below is primary, so relocating the
+  # real zizmor step (or planting a decoy `run: zizmor …` elsewhere) still changes the
+  # document and drifts the compare — the sentinel count alone cannot launder that.
+  # Count sentinel OCCURRENCES, not matching lines: `grep -c` counts lines, so two sentinels
+  # on one line would read as 1 and slip past the ">1" guard. gsub(s,s) returns the count.
+  ls=$(printf '%s\n' "$live_n" | awk -v s="$ZIZMOR_SENTINEL" '{n+=gsub(s,s)} END{print n+0}')
+  ts=$(printf '%s\n' "$tmpl_n" | awk -v s="$ZIZMOR_SENTINEL" '{n+=gsub(s,s)} END{print n+0}')
+  if [[ "$ls" -ne 1 || "$ts" -ne 1 ]]; then
+    echo "ERROR: RUN_ZIZMOR_INVOCATION sentinel count must be exactly 1 per side (live=$ls template=$ts) — fail-closed" >&2
+    return 2
+  fi
+
+  if [[ "$live_n" == "$tmpl_n" ]]; then
+    echo "PARITY   live security.yml ≡ SKILL.md Section N template (whole-document, normalized)."
+    return 0
+  fi
+  echo "DRIFT    live security.yml and the SKILL.md Section N template diverge beyond the shared allowlist:" >&2
+  diff <(printf '%s\n' "$live_n") <(printf '%s\n' "$tmpl_n") | sed 's/^/  /' >&2
+  return 1
+}
+
 # --- self-test: crafted fixtures prove drift is caught and parity passes -------------
 if [[ "${1:-}" == "--self-test" ]]; then
   tdir=$(mktemp -d)
@@ -196,6 +320,108 @@ EOF
   printf '  uses: actions/checkout@%040d # v6.0.3\n' 0 > "$tdir/skill_ok"
   if [[ -z "$(bad_shared_pins "$tdir/live2" "$tdir/skill_tag")" ]]; then echo "FAIL: tag-pinned live action not flagged"; fail=1; fi
   if [[ -n "$(bad_shared_pins "$tdir/live2" "$tdir/skill_ok")" ]]; then echo "FAIL: well-formed shared pin wrongly flagged"; fail=1; fi
+
+  # --- content-hash parity fixtures (issue #66) ---------------------------------------
+  # A minimal live/template pair kept BYTE-IDENTICAL except the sanctioned zizmor divergence
+  # (--config vs --min-severity). Base case must PASS; each mutation of ANY other content —
+  # if/needs/paths/uses/run-wording, OR a comment — must fail. No heredoc/quote/block-scalar
+  # fixtures: the normalizer no longer inspects content, so those constructs are compared
+  # verbatim like every other line rather than parsed.
+  chd="$tdir/ch"; mkdir -p "$chd"
+  cat > "$chd/live.yml" <<'EOF'
+on:
+  push:
+    paths:
+      - '**/*.py'
+jobs:
+  zizmor:
+    needs: [changes]
+    if: always()
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111 # v1.0.0
+      - run: echo "## report"
+      - run: echo "a # b"
+      - run: |
+          echo start
+          # inner comment
+          echo done
+      - run: zizmor --config .zizmor.yml .github/workflows/
+EOF
+  cat > "$chd/skill.md" <<'EOF'
+#### N. Security Scanning Backstop
+
+```yaml
+on:
+  push:
+    paths:
+      - '**/*.py'
+jobs:
+  zizmor:
+    needs: [changes]
+    if: always()
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111 # v1.0.0
+      - run: echo "## report"
+      - run: echo "a # b"
+      - run: |
+          echo start
+          # inner comment
+          echo done
+      - run: zizmor --min-severity high --min-confidence high .github/workflows/
+```
+**Required file:** x
+EOF
+  bl="$chd/live.yml"; bs="$chd/skill.md"
+  # set -e-safe runner: capture rc without aborting on the (expected) non-zero.
+  chk() { local r=0; content_hash_check "$1" "$2" >/dev/null 2>&1 || r=$?; printf '%s' "$r"; }
+
+  # base: identical after the zizmor sentinel collapse → parity (0)
+  if [[ "$(chk "$bl" "$bs")" != "0" ]]; then echo "FAIL: content base case not parity"; fail=1; fi
+  # 1. if: edit → drift (1)
+  sed -E 's/if: always\(\)/if: never()/' "$bs" > "$chd/m_if"
+  if [[ "$(chk "$bl" "$chd/m_if")" != "1" ]]; then echo "FAIL: if: drift not caught"; fail=1; fi
+  # 2. needs: edit → drift (1)
+  sed -E 's/needs: \[changes\]/needs: [changes, foo]/' "$bs" > "$chd/m_needs"
+  if [[ "$(chk "$bl" "$chd/m_needs")" != "1" ]]; then echo "FAIL: needs: drift not caught"; fail=1; fi
+  # 3. trigger/paths edit → drift (1)
+  sed -E "s@\\*\\*/\\*\\.py@**/*.js@" "$bs" > "$chd/m_paths"
+  if [[ "$(chk "$bl" "$chd/m_paths")" != "1" ]]; then echo "FAIL: paths drift not caught"; fail=1; fi
+  # 4. uses: SHA edit → drift (1)
+  sed -E 's/checkout@1111111111111111111111111111111111111111/checkout@2222222222222222222222222222222222222222/' "$bs" > "$chd/m_uses"
+  if [[ "$(chk "$bl" "$chd/m_uses")" != "1" ]]; then echo "FAIL: uses: drift not caught"; fail=1; fi
+  # 5. run-block wording edit → drift (1)
+  sed -E 's/echo "## report"/echo "## changed"/' "$bs" > "$chd/m_word"
+  if [[ "$(chk "$bl" "$chd/m_word")" != "1" ]]; then echo "FAIL: wording drift not caught"; fail=1; fi
+  # 6. duplicate sentinel line → undecidable → fail-closed (2)
+  awk '1; /zizmor --min-severity/{print "      - run: zizmor --min-severity high --min-confidence high .github/workflows/"}' "$bs" > "$chd/m_dup"
+  if [[ "$(chk "$bl" "$chd/m_dup")" != "2" ]]; then echo "FAIL: duplicate sentinel not fail-closed"; fail=1; fi
+  # 7. missing sentinel (zizmor line changed shape) → fail-closed (2)
+  sed -E 's@zizmor --min-severity high --min-confidence high .github/workflows/@zizmor --other@' "$bs" > "$chd/m_miss"
+  if [[ "$(chk "$bl" "$chd/m_miss")" != "2" ]]; then echo "FAIL: missing sentinel not fail-closed"; fail=1; fi
+  # 8. extra non-allowlisted line on one side → drift (1)
+  awk '1; /echo "## report"/{print "      - run: echo extra"}' "$bs" > "$chd/m_extra"
+  if [[ "$(chk "$bl" "$chd/m_extra")" != "1" ]]; then echo "FAIL: extra divergence not caught"; fail=1; fi
+  # 9. two ```yaml blocks in Section N → fail-closed (2)
+  awk 'BEGIN{d=0} {print} /^```$/ && d==0 {print ""; print "```yaml"; print "extra: block"; print "```"; d=1}' "$bs" > "$chd/m_2blk"
+  if [[ "$(chk "$bl" "$chd/m_2blk")" != "2" ]]; then echo "FAIL: two fenced blocks not fail-closed"; fail=1; fi
+  # 10. an EXECUTABLE line inside a `run: |` block IS compared — a change must drift (1).
+  sed -E 's/echo start/echo begin/' "$bs" > "$chd/m_bsexec"
+  if [[ "$(chk "$bl" "$chd/m_bsexec")" != "1" ]]; then echo "FAIL: block-scalar executable drift not caught"; fail=1; fi
+  # 11. a comment edited on ONE side now drifts (1). The two documents are kept byte-identical,
+  #     so comments are compared verbatim, not stripped — the intended tradeoff of the
+  #     parser-free design: the installed template must track live's comments too.
+  sed -E 's/# inner comment/# changed/' "$bs" > "$chd/m_cmt"
+  if [[ "$(chk "$bl" "$chd/m_cmt")" != "1" ]]; then echo "FAIL: one-sided comment edit should drift"; fail=1; fi
+  # 12. a STRUCTURAL move of the zizmor step (list-item `- run:` → block-mapping `run:` at a
+  #     different indent) must drift (1): the sentinel substitution preserves the `<ws>(- )?run: `
+  #     prefix, so only the command text collapses and a prefix change is still compared.
+  sed -E 's@^      - run: zizmor --min-severity@        run: zizmor --min-severity@' "$bs" > "$chd/m_struct"
+  if [[ "$(chk "$bl" "$chd/m_struct")" != "1" ]]; then echo "FAIL: structural move of zizmor step not caught"; fail=1; fi
+  # 13. the reserved sentinel token planted LITERALLY in a source (here the template) → fail-closed
+  #     (2): it would otherwise pre-load a sentinel and collude with the live command's collapse
+  #     to fake the per-side count and launder a broken step.
+  sed -E "s@- run: zizmor --min-severity high --min-confidence high .github/workflows/@- run: ${ZIZMOR_SENTINEL}@" "$bs" > "$chd/m_planted"
+  if [[ "$(chk "$bl" "$chd/m_planted")" != "2" ]]; then echo "FAIL: planted literal sentinel not fail-closed"; fail=1; fi
 
   rm -f "$lf" "$sf"
   if [[ "$fail" -eq 0 ]]; then echo "self-test: PASS"; exit 0; else echo "self-test: FAIL"; exit 1; fi
@@ -257,4 +483,19 @@ fi
 printf 'Template↔live pin parity (SKILL.md vs .github/workflows)\n\n'
 rc=0
 report "$live_f" "$skill_f" || rc=$?
+
+# Whole-document content parity (issue #66): live security.yml vs SKILL.md Section N.
+# Fail-closed: a missing security.yml or any extraction/normalization error is exit 2,
+# never a silent pass. Severities combine (2 dominates 1 dominates 0), so pin OR content
+# drift fails the check.
+SECURITY_YML="$WF_DIR/security.yml"
+printf '\nWhole-document content parity (security.yml vs SKILL.md Section N)\n\n'
+crc=0
+if [[ -f "$SECURITY_YML" ]]; then
+  content_hash_check "$SECURITY_YML" "$SKILL" || crc=$?
+else
+  echo "ERROR: $SECURITY_YML not found — cannot run content parity (fail-closed)" >&2
+  crc=2
+fi
+rc=$(( crc > rc ? crc : rc ))
 exit "$rc"

@@ -3079,11 +3079,10 @@ jobs:
       - name: Install zizmor
         run: pip install --quiet 'zizmor==1.26.1'  # Pin version — unpinned is a supply chain risk; lockstep: see issue #67
       - name: Scan GitHub Actions workflows
-        # INTENTIONAL divergence: this template ships the consumer default
-        # (--min-severity high --min-confidence high) to avoid onboarding friction.
-        # helmet's own security.yml dogfoods the strict all-severity gate via
-        # `zizmor --config .zizmor.yml`. Sole entry in the shared divergence
-        # allowlist (RUN_ZIZMOR_INVOCATION); mirrored comment lives in helmet's security.yml.
+        # INTENTIONAL divergence (sole entry in the shared divergence allowlist, RUN_ZIZMOR_INVOCATION):
+        # helmet's own security.yml dogfoods the strict all-severity gate (zizmor --config .zizmor.yml);
+        # the installed template ships the consumer default (--min-severity high --min-confidence high)
+        # to avoid onboarding friction. Only the run: line below differs between live and template.
         run: zizmor --min-severity high --min-confidence high .github/workflows/
 
   reports:
