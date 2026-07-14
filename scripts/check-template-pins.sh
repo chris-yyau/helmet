@@ -169,10 +169,19 @@ extract_section_n_block() {
 # Normalize a workflow document for whole-document comparison (reads stdin). Live security.yml
 # and the SKILL.md Section N template are kept BYTE-IDENTICAL except the sanctioned zizmor
 # divergence, so the only normalization needed is to collapse that one line to a sentinel;
-# everything else — comments included — already compares equal.
-# TWO plain substitutions, one per zizmor variant — NOT a `(a|b)` alternation: BSD and GNU sed
+# everything else — comments included — already compares equal. (Command substitution at the
+# call site also strips trailing newlines, so a difference of trailing blank lines alone is
+# ignored — benign: blank lines carry no gating logic.)
+# TWO substitutions, one per zizmor variant — NOT a `(a|b)` alternation: BSD and GNU sed
 # disagree on `\|`, and a broken alternation would silently fail to collapse and read a CLEAN
-# tree as drift (a false positive that blocks every PR).
+# tree as drift (a false positive that blocks every PR). Each is ANCHORED to a WHOLE run-command
+# line (`^<ws>(- )?run: zizmor … <ws>$`) and collapses ONLY the command text to the sentinel,
+# PRESERVING the matched `<indent>(- )?run: ` prefix via a backreference. So (a) a decoy that
+# merely embeds the `run: zizmor …` substring in a larger scalar, comment, or quoted string
+# cannot manufacture the sentinel the count guard expects, and (b) a STRUCTURAL move of the step
+# (indentation change, list-item `- run:` vs block-mapping `run:`) still differs after
+# normalization and is caught as drift. Any zizmor invocation OTHER than the two sanctioned
+# variants fails to match → 0 sentinels → the count guard below fails closed.
 # Deliberately does NO comment/quote/heredoc/block-scalar handling. Because the two documents
 # are byte-identical there is nothing to strip — which is precisely why this check needs no
 # YAML/shell parser and cannot be fooled by adversarial comment constructs (multiline quoted
@@ -180,8 +189,8 @@ extract_section_n_block() {
 # only one side reads as drift. That is intended — the installed template must stay in lockstep
 # with live, comments and all; the check tells you exactly what to re-sync.
 normalize_doc() {
-  sed -E "s@run: zizmor --config \\.zizmor\\.yml \\.github/workflows/@run: ${ZIZMOR_SENTINEL}@" \
-    | sed -E "s@run: zizmor --min-severity high --min-confidence high \\.github/workflows/@run: ${ZIZMOR_SENTINEL}@"
+  sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --config \\.zizmor\\.yml \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@" \
+    | sed -E "s@^([[:space:]]*(-[[:space:]]+)?run: )zizmor --min-severity high --min-confidence high \\.github/workflows/[[:space:]]*\$@\\1${ZIZMOR_SENTINEL}@"
 }
 
 # content_hash_check LIVE_SECURITY_YML SKILL_MD
@@ -373,6 +382,11 @@ EOF
   #     parser-free design: the installed template must track live's comments too.
   sed -E 's/# inner comment/# changed/' "$bs" > "$chd/m_cmt"
   if [[ "$(chk "$bl" "$chd/m_cmt")" != "1" ]]; then echo "FAIL: one-sided comment edit should drift"; fail=1; fi
+  # 12. a STRUCTURAL move of the zizmor step (list-item `- run:` → block-mapping `run:` at a
+  #     different indent) must drift (1): the sentinel substitution preserves the `<ws>(- )?run: `
+  #     prefix, so only the command text collapses and a prefix change is still compared.
+  sed -E 's@^      - run: zizmor --min-severity@        run: zizmor --min-severity@' "$bs" > "$chd/m_struct"
+  if [[ "$(chk "$bl" "$chd/m_struct")" != "1" ]]; then echo "FAIL: structural move of zizmor step not caught"; fail=1; fi
 
   rm -f "$lf" "$sf"
   if [[ "$fail" -eq 0 ]]; then echo "self-test: PASS"; exit 0; else echo "self-test: FAIL"; exit 1; fi
