@@ -207,6 +207,24 @@ content_hash_check() {
   fi
   [[ -n "$blk" ]] || { echo "ERROR: extracted an empty Section N template — fail-closed" >&2; return 2; }
 
+  # Reserved-token guard: the sentinel is a synthetic internal token that must NEVER appear
+  # literally in a real workflow/template. If it did, a planted `run: <SENTINEL>` line would
+  # already carry the sentinel BEFORE substitution — colluding with the real command's collapse
+  # to fake the per-side count of 1 and let a broken Section N compare equal. Fail closed on any
+  # literal occurrence in either raw source (grep -F: fixed string, not a regex).
+  # Capture grep's exit EXPLICITLY rather than `if`-testing a pipe: under `set -o pipefail` a
+  # `printf | grep -q` writer can take SIGPIPE when grep short-circuits on a match, making the
+  # pipeline nonzero and reading a real hit as a MISS (fail-OPEN). A here-string has no writer to
+  # signal; and treating any non-1 exit (0 = found, ≥2 = grep read error) as "present or
+  # unverifiable" keeps it fail-closed. `$live_f` is pre-checked readable; `-F` has no regex.
+  local live_tok=0 tmpl_tok=0
+  grep -qF "$ZIZMOR_SENTINEL" "$live_f"  || live_tok=$?
+  grep -qF "$ZIZMOR_SENTINEL" <<< "$blk" || tmpl_tok=$?
+  if [[ "$live_tok" != 1 || "$tmpl_tok" != 1 ]]; then
+    echo "ERROR: reserved sentinel token '$ZIZMOR_SENTINEL' present or unverifiable in a source document — fail-closed" >&2
+    return 2
+  fi
+
   live_n=$(normalize_doc < "$live_f")
   tmpl_n=$(printf '%s\n' "$blk" | normalize_doc)
   [[ -n "$live_n" && -n "$tmpl_n" ]] || { echo "ERROR: a normalized document is empty (normalization broke) — fail-closed" >&2; return 2; }
@@ -387,6 +405,11 @@ EOF
   #     prefix, so only the command text collapses and a prefix change is still compared.
   sed -E 's@^      - run: zizmor --min-severity@        run: zizmor --min-severity@' "$bs" > "$chd/m_struct"
   if [[ "$(chk "$bl" "$chd/m_struct")" != "1" ]]; then echo "FAIL: structural move of zizmor step not caught"; fail=1; fi
+  # 13. the reserved sentinel token planted LITERALLY in a source (here the template) → fail-closed
+  #     (2): it would otherwise pre-load a sentinel and collude with the live command's collapse
+  #     to fake the per-side count and launder a broken step.
+  sed -E "s@- run: zizmor --min-severity high --min-confidence high .github/workflows/@- run: ${ZIZMOR_SENTINEL}@" "$bs" > "$chd/m_planted"
+  if [[ "$(chk "$bl" "$chd/m_planted")" != "2" ]]; then echo "FAIL: planted literal sentinel not fail-closed"; fail=1; fi
 
   rm -f "$lf" "$sf"
   if [[ "$fail" -eq 0 ]]; then echo "self-test: PASS"; exit 0; else echo "self-test: FAIL"; exit 1; fi
