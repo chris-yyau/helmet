@@ -23,7 +23,9 @@ on:
       - '**/pyproject.toml'
       - '**/uv.lock'
       - '**/Cargo.lock'
+      - '**/Cargo.toml'
       - '**/Package.resolved'
+      - '**/Package.swift'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -108,7 +110,7 @@ jobs:
           # be treated as "false" → security=false → silent scanner skip (fail-OPEN).
           # Flagged by Greptile as residual after the prior git-diff fix.
           grep_status=0
-          grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Package\.resolved' <<< "$changed_files" || grep_status=$?
+          grep -qE '\.(sh|js|py|yml|yaml|tf)$|\.github/|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.sum|requirements.*\.txt|Dockerfile|pyproject\.toml|uv\.lock|Cargo\.lock|Cargo\.toml|Package\.resolved|Package\.swift' <<< "$changed_files" || grep_status=$?
           case "$grep_status" in
             0) echo "security=true" >> "$GITHUB_OUTPUT" ;;
             1) echo "security=false" >> "$GITHUB_OUTPUT" ;;
