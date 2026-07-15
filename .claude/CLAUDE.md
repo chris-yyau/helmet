@@ -28,6 +28,8 @@ skills/           Skill definitions (1: helmet — large four-phase onboarding s
 | `./scripts/bump-version.sh --check` | Verify manifests are in sync (used in CI) |
 | `.github/scripts/check-pinned-uses.sh` | Verify all Actions use full SHA pins |
 | `./scripts/check-template-pins.sh` | Verify SKILL.md template action pins match live workflow pins (runs in the `version-drift` CI job) |
+| `./scripts/check-fleet-scanner-invariants.sh --fleet` | Assert each fleet mirror's live `security.yml` still holds the security-critical scanner invariants (fail-closed gates, trivy/semgrep/checkov/zizmor blocking, PR reachability); tolerates benign customization. Needs `gh` + PyYAML |
+| `./scripts/check-fleet-scanner-invariants.sh --self-test` | Hermetic fixtures proving the invariant asserter fails closed (runs in the `version-drift` CI job) |
 
 ## CI Workflows
 

@@ -35,6 +35,16 @@ jobs:
         run: ./scripts/check-template-pins.sh --self-test
       - name: Test required-checks drift detector
         run: ./scripts/test-check-required-checks.sh
+      # PyYAML is the fleet scanner-invariants checker's parser dependency — not
+      # otherwise a repo/runner dep, so install it explicitly (the checker fails
+      # closed with exit 2 if absent). The --self-test is hermetic (no network/gh).
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install --quiet 'pyyaml==6.0.3'  # Pin version — unpinned is a supply chain risk (the parser that validates security workflows)
+      - name: Fleet scanner-invariants self-test (fixtures)
+        run: ./scripts/check-fleet-scanner-invariants.sh --self-test
 
   commitlint:
     runs-on: ubuntu-latest
