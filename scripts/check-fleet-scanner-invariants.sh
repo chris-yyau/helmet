@@ -21,6 +21,11 @@
 # hole #66 deliberately closed by NOT parsing; re-opening it here is out of scope.
 # The ultimate control is CI actually running the scanners on every PR/push — this
 # is drift-detection over the gating *shape*, not a sandbox for a hostile maintainer.
+# Also OUT of scope: job SCHEDULABILITY (valid `runs-on`, well-formed reusable-workflow
+# `uses:`, non-cyclic/existent `needs:` graph). A job that can't be scheduled is a
+# workflow GitHub REJECTS or never starts — a LOUD CI failure (every run red/pending),
+# not a silent scanner weakening. Fully validating it means reimplementing GitHub's
+# workflow schema; the shell/YAML masking checks here target only what fails *quietly*.
 #
 # INVARIANTS asserted per mirror (each fires only when the mirror is *weaker*):
 #   1. Four BLOCKING scanner steps present: trivy (action or CLI), semgrep
@@ -120,16 +125,49 @@ def step_with(step):
 
 # --- shell command extraction: ignore comments and non-command (echo/printf) text ----
 def strip_comments(run):
-    """Drop `#`-to-EOL comments so a commented invocation (`# checkov -d .`) never
-    counts as a real scanner. ponytail: naive — a `#` inside a quoted string is also
-    stripped, but that only makes presence detection STRICTER (a real scan command
-    doesn't need a bare ` #`), the safe direction for a fail-closed check."""
+    """Join shell line-continuations (`\\`<newline>) so a command split across lines is one
+    logical line, then drop `#`-to-EOL comments — QUOTE-AWARE so a `#` inside single/double
+    quotes (`--config 'p/foo #bar'`) is NOT treated as a comment (else a trailing `|| echo`
+    masking operator after it would be wrongly stripped, hiding the mask). A `#` is a comment
+    only at line start or after whitespace, outside quotes. Backslash-escaped quotes (`\\"`)
+    are honored so they don't fake-close a string. LIMIT (accepted, #66-style): quote/escape
+    state is tracked PER LINE, so a single/double quote that spans a newline is not carried
+    across — a rare construct in a scanner step, and unhandled exotica (multiline quotes,
+    heredocs, `$'…'` ANSI-C) read as STRICTER (more likely to flag), the safe direction. Full
+    fidelity here means a real shell lexer; the ultimate control is CI actually running."""
+    run = re.sub(r"\\\n[ \t]*", " ", run)  # bash line-continuation → single logical line
     out = []
     for line in run.splitlines():
-        m = re.search(r"(^|\s)#", line)
-        if m:
-            line = line[:m.start()]
-        out.append(line)
+        res = []
+        quote = None
+        prev_ws = True
+        esc = False
+        for c in line:
+            if esc:  # previous char was a backslash → this char is literal
+                res.append(c)
+                esc = False
+                prev_ws = False
+            elif c == "\\" and quote != "'":
+                # backslash escapes the next char outside quotes and inside double quotes
+                # (but NOT inside single quotes, where it is literal). Handles `\"` / `\#`.
+                res.append(c)
+                esc = True
+                prev_ws = False
+            elif quote:
+                res.append(c)
+                if c == quote:
+                    quote = None
+                prev_ws = False
+            elif c in ("'", '"'):
+                quote = c
+                res.append(c)
+                prev_ws = False
+            elif c == "#" and prev_ws:
+                break  # unquoted comment → to end of line
+            else:
+                res.append(c)
+                prev_ws = c.isspace()
+        out.append("".join(res))
     return "\n".join(out)
 
 # Non-command builtins whose ARGUMENTS must not count as an invocation
@@ -137,21 +175,37 @@ def strip_comments(run):
 _NONCMD = {"echo", "printf", "print", ":", "true", "false", "cat", "test", "["}
 
 def command_segments(run):
-    """Yield (leading_tool, segment_text) for each shell command segment — split on
-    shell separators, skipping env-assignment / sudo / env / command prefixes, dropping
-    comments and echo-style output. A tool matched here sits at a real COMMAND position.
+    """Yield (leading_tool, segment_text, negated) for each shell command segment — split
+    on shell separators, skipping env-assignment / sudo / env / command / `!` prefixes,
+    dropping comments and echo-style output. A tool matched here sits at a real COMMAND
+    position; `negated` is True if a shell `!` prefixes it (inverting its exit). This is the
+    SINGLE source of truth for prefix stripping — the negation check reuses it rather than a
+    parallel regex, so `! FOO=bar semgrep` and `! command semgrep` are handled identically.
     ponytail: does NOT unwrap `bash -c '…'`; canonical uses direct invocation, and an
     unwrapped wrapper simply reads as 'scanner missing' (fail-closed), the safe side."""
+    stripped = strip_comments(run)
+    # Split on shell separators found OUTSIDE quotes: locate them in a quote-blanked copy,
+    # then slice the ORIGINAL so a `|`/`;` inside `--config 'a|b;c.yml'` doesn't split the
+    # command (which would hide the `--error` flag after it). Returned text is the real text.
+    blanked = _blank_quotes(stripped)
+    parts, last = [], 0
+    for m in re.finditer(r"\n|;|&&|\|\||\||&", blanked):
+        parts.append(stripped[last:m.start()])
+        last = m.end()
+    parts.append(stripped[last:])
     segs = []
-    for part in re.split(r"(?:\n|;|&&|\|\||\||&)", strip_comments(run)):
+    for part in parts:
         toks = part.split()
         i = 0
+        negated = False
         while i < len(toks) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[i])
-                                 or toks[i] in ("env", "sudo", "command")):
+                                 or toks[i] in ("env", "sudo", "command", "!", "time", "nohup", "exec")):
+            if toks[i] == "!":
+                negated = not negated  # `! ! cmd` cancels
             i += 1
         if i >= len(toks) or toks[i] in _NONCMD:
             continue
-        segs.append((toks[i], " ".join(toks[i:])))
+        segs.append((toks[i], " ".join(toks[i:]), negated))
     return segs
 
 # --- scanner step matchers → the matched command SEGMENT ("" if absent) --------------
@@ -159,38 +213,121 @@ def is_trivy_action(step):
     return re.match(r"^aquasecurity/trivy-action@", step_uses(step)) is not None
 
 def trivy_cli_seg(step):
-    for lead, seg in command_segments(step_run(step)):
+    for lead, seg, _ in command_segments(step_run(step)):
         if lead == "trivy" and re.match(r"^trivy\s+(fs|filesystem|rootfs|image|config)\b", seg):
             return seg
     return ""
 
 def semgrep_seg(step):
-    for lead, seg in command_segments(step_run(step)):
+    for lead, seg, _ in command_segments(step_run(step)):
         if lead == "semgrep" and re.match(r"^semgrep\s+scan\b", seg):
             return seg
     return ""
 
 def checkov_seg(step):
-    for lead, seg in command_segments(step_run(step)):
+    for lead, seg, _ in command_segments(step_run(step)):
         if lead == "checkov" and re.search(r"(^|\s)(-d\b|--directory\b)", seg):
             return seg
     return ""
 
 def zizmor_seg(step):
-    for lead, seg in command_segments(step_run(step)):
+    for lead, seg, _ in command_segments(step_run(step)):
         if lead == "zizmor" and re.search(r"\.github/workflows|\s\.(\s|$)", seg):
             return seg
     return ""
 
 # --- invariant 4: is this scanner step neutered? -------------------------------------
+def _blank_quotes(s):
+    """Replace the CONTENTS of quoted spans with 'Q' (preserving the quote marks and length)
+    so shell OPERATORS inside quotes (`--config 'rules|a;b.yml'`) aren't mistaken for real
+    pipes/semicolons. Honors `\\`-escapes outside single quotes. Used for operator/masking
+    detection where quoted text is literal DATA — NOT for trap handlers, whose quoted body is
+    semantically active."""
+    out = []
+    quote = None
+    esc = False
+    for c in s:
+        if esc:
+            out.append("Q" if quote else c)
+            esc = False
+        elif c == "\\" and quote != "'":
+            out.append(c)
+            esc = True
+        elif quote:
+            if c == quote:
+                out.append(c)
+                quote = None
+            else:
+                out.append("Q")
+        elif c in ("'", '"'):
+            quote = c
+            out.append(c)
+        else:
+            out.append(c)
+    return "".join(out)
+
 def run_neutered(run):
-    if re.search(r"\|\|\s*(true|:)(\s|$|;|&)", run):
+    # Operator masks are only real OUTSIDE quotes — blank quoted spans first so a quoted
+    # `|| true` in a config value can't false-positive.
+    blanked = _blank_quotes(run)
+    if re.search(r"\|\|\s*(true|:)(\s|$|;|&)", blanked):
         return True
-    if re.search(r"\|\|\s*exit\s+0\b", run):
+    if re.search(r"\|\|\s*exit\s+0\b", blanked):
         return True
-    if re.search(r"(^|\n|;|\s)set\s+\+e\b", run):
+    if re.search(r"(^|\n|;|\s)set\s+\+e\b", blanked):
+        return True
+    # a trap that FORCES exit 0 on step/error exit — `trap 'exit 0' EXIT|ERR|0` (signal `0`
+    # is the EXIT alias; signal names are case-insensitive in bash) — swallows the scanner's
+    # failure. Checked on the RAW run because the handler body is semantic even though quoted.
+    # `trap 'exit 1' ERR` / `trap 'rm -f x' EXIT` do NOT force a zero exit and are NOT matched.
+    # ponytail: a handler split across newlines is the accepted single-line-parse limit below.
+    if re.search(r"\btrap\b[^\n]*\bexit\s+0\b[^\n]*\b(?i:EXIT|ERR|0)\b", run):
         return True
     return False
+
+def exit_masked(run, tool_re):
+    """True if the scanner's non-zero exit can't fail the step. Fail-closed: flag the
+    scanner PIPED into another command (`scanner | tee` — last-stage exit wins unless
+    pipefail, which we can't assume across shells), an `||` FALLBACK that swallows the
+    failure (`scanner || echo ok`, `scanner || true`), BACKGROUND execution (`scanner &`
+    — step doesn't wait on it), or a later command SEQUENCED after it on a `;`/newline
+    (`scanner; true` — the trailing command's exit wins). `&&`-chaining is NOT masking
+    (a failed scanner short-circuits the step)."""
+    # Blank quoted spans so operators INSIDE quotes (`--config 'rules|a;b.yml'`) aren't
+    # mistaken for real pipes/semicolons/backgrounds — a false-positive that would flag a
+    # legitimate mirror. Tool invocations are never quoted, so tool_re still matches.
+    run = _blank_quotes(strip_comments(run))
+    # scanner logically NEGATED (`! scanner` inverts its exit → a real failure passes the
+    # step). Detected via command_segments' own prefix stripping (single source of truth),
+    # so any intervening env-assignment / command prefix (`! FOO=bar semgrep`, `! command
+    # semgrep`) is handled. Survives only in quoted/block-scalar runs; an unquoted `!` is a
+    # YAML tag that both PyYAML and GitHub strip, so that form isn't a real weakening.
+    for _lead, seg, negated in command_segments(run):
+        if negated and re.search(tool_re, seg):
+            return True
+    # scanner piped into a following command (single `|`, not `||`).
+    if re.search(tool_re + r"[^\n;]*?(?<!\|)\|(?!\|)", run):
+        return True
+    # scanner with an `||` fallback that can swallow the failure (any RHS, not just true).
+    if re.search(tool_re + r"[^\n]*?\|\|", run):
+        return True
+    # scanner backgrounded with a single `&` (not `&&`, not a `>&`/`&>` redirect).
+    if re.search(tool_re + r"[^\n;|]*?(?<![>&])&(?![&>])", run):
+        return True
+    # scanner is not in the FINAL top-level statement (something sequenced after it).
+    stmts = [s for s in re.split(r"[;\n]", run) if s.strip()]
+    for i, s in enumerate(stmts):
+        if re.search(tool_re, s) and i != len(stmts) - 1:
+            return True
+    return False
+
+# SCOPE — job SCHEDULABILITY (does the scanner job have a valid `runs-on`, a well-formed
+# reusable-workflow `uses:`, a non-cyclic/existent `needs:` graph) is deliberately OUT of
+# scope. A job that can't be scheduled is a workflow GitHub REJECTS or never starts — a LOUD
+# CI failure (every run red/pending), not a *silent* scanner weakening, so it falls outside
+# this drift-detector's threat model. Validating it fully means reimplementing GitHub's
+# workflow schema; the ultimate control is CI actually running. (Removed after review showed
+# it inviting unbounded schema-validation with no threat-model payoff — see the PR discussion.)
 
 def step_neutered(job, step):
     # continue-on-error is safe ONLY if absent or literal `false`. Literal `true` OR any
@@ -324,12 +461,21 @@ for scanner in SCANNERS:
                 ok = trivy_action_hardened(step) if is_action else trivy_cli_hardened(seg)
                 if not ok:
                     reasons.append("trivy hardening weak (scanners/severity/exit-code/scan-type)")
+                if seg and exit_masked(step_run(step), r"\btrivy\s+(?:fs|filesystem|rootfs|image|config)\b"):
+                    reasons.append("trivy exit masked (piped / trailing command)")
             elif scanner == "semgrep":
                 if not re.search(r"--error\b", seg):
                     reasons.append("semgrep missing --error (exits 0 on findings → fail-open)")
+                if exit_masked(step_run(step), r"\bsemgrep\s+scan\b"):
+                    reasons.append("semgrep exit masked (piped / trailing command)")
             elif scanner == "checkov":
                 if re.search(r"--soft-fail(-on)?\b", seg):
                     reasons.append("checkov --soft-fail (findings non-blocking)")
+                if exit_masked(step_run(step), r"\bcheckov\b"):
+                    reasons.append("checkov exit masked (piped / trailing command)")
+            else:  # zizmor
+                if exit_masked(step_run(step), r"\bzizmor\b"):
+                    reasons.append("zizmor exit masked (piped / trailing command)")
             if reasons:
                 weakened.append("%s: %s" % (jn, "; ".join(reasons)))
     if not candidates:
@@ -401,6 +547,7 @@ jobs:
   trivy:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -411,17 +558,20 @@ jobs:
   semgrep:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: pip install semgrep
       - run: semgrep scan --config p/security-audit --error --exclude tests .
   checkov:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: checkov -d . --skip-path tests --quiet
   zizmor:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: zizmor --min-severity high --min-confidence high .github/workflows/
 EOF
@@ -442,18 +592,21 @@ on:
     paths: ['hooks/**', 'scripts/**']   # repo-specific
 jobs:
   changes:
+    runs-on: ubuntu-latest
     outputs:
       security: ${{ steps.f.outputs.security }}
     steps:
       - id: f
         run: echo security=true >> "$GITHUB_OUTPUT"
   gitleaks:
+    runs-on: ubuntu-latest
     steps:
       - run: gitleaks detect
   trivy:
     needs: [changes]
     # reworded comment here
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - uses: aquasecurity/trivy-action@0000000000000000000000000000000000000000 # v0.30.0 (older, valid)
         with:
@@ -464,16 +617,19 @@ jobs:
   semgrep:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: semgrep scan --config p/ci --error .
   checkov:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: checkov --directory . --quiet
   zizmor:
     needs: [changes]
     if: always() && (needs.changes.outputs.security == 'true' || needs.changes.result != 'success')
+    runs-on: ubuntu-latest
     steps:
       - run: zizmor .github/workflows/
 EOF
@@ -494,6 +650,67 @@ EOF
   # semgrep without --error ⇒ FAIL (inv 1/fail-open — HIGH fix)
   expect 1 "semgrep no --error" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#semgrep scan --config p/security-audit --error --exclude tests .#semgrep scan --config p/security-audit --exclude tests .#')"
+
+  # scanner piped into another command (exit status = tee's, not semgrep's) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "piped semgrep" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(semgrep scan --config p/security-audit --error --exclude tests .)#\1 | tee out.txt#')"
+
+  # trailing no-op sequenced after the scan (step exits 0 regardless) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "trailing ; true checkov" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1; true#')"
+
+  # `|| echo` fallback swallows the failure (not just `|| true`) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "|| echo fallback" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 || echo ignored#')"
+
+  # backgrounded scan (`&`) — step doesn't wait on its exit ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "backgrounded scan" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 \&#')"
+
+  # a trap that forces exit 0 on ERR swallows the scanner's failure ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "trap exit-0 ERR" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: checkov -d . --skip-path tests --quiet/      - run: |\n          trap 'exit 0' ERR\n          checkov -d . --skip-path tests --quiet/")"
+
+  # `trap 'exit 0' 0` — signal 0 is the EXIT alias ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "trap exit-0 signal-0" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: checkov -d . --skip-path tests --quiet/      - run: |\n          trap 'exit 0' 0\n          checkov -d . --skip-path tests --quiet/")"
+
+  # a plain cleanup trap (no exit-forcing handler) must NOT false-positive ⇒ PASS
+  expect 0 "cleanup trap ok" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: checkov -d . --skip-path tests --quiet/      - run: |\n          trap 'rm -f tmp' EXIT\n          checkov -d . --skip-path tests --quiet/")"
+
+  # `trap 'exit 1' ERR` PRESERVES the failure (not a zero exit) ⇒ PASS (no false-positive)
+  expect 0 "trap exit-1 ok" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: checkov -d . --skip-path tests --quiet/      - run: |\n          trap 'exit 1' ERR\n          checkov -d . --skip-path tests --quiet/")"
+
+  # a `|` INSIDE a quoted arg (`--config 'a|b.yml'`) is DATA, not a pipe ⇒ PASS (no false-positive)
+  expect 0 "quoted pipe in config" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E "s#--config p/security-audit --error#--config 'rules|strict.yml' --error#")"
+
+  # scanner logically negated (`! scanner` inverts its exit) in a block scalar ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "negated semgrep" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          ! semgrep scan --config p\/security-audit --error --exclude tests ./')"
+
+  # negation with an intervening command prefix (`! command semgrep …`) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "negated via command prefix" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          ! command semgrep scan --config p\/security-audit --error --exclude tests ./')"
+
+  # negation with an intervening env-assignment (`! FOO=bar semgrep …`) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "negated via env-assignment" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          ! FOO=bar semgrep scan --config p\/security-audit --error --exclude tests ./')"
+
+  # negation split across a shell line-continuation (`! \<nl> semgrep`) ⇒ FAIL (inv 4 — HIGH fix)
+  expect 1 "negated via line continuation" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          ! \\\n          semgrep scan --config p\/security-audit --error --exclude tests ./')"
+
+  # a `#` INSIDE quotes must not truncate masking detection: `… 'p/x #y' . || echo` is masked ⇒ FAIL (HIGH fix)
+  expect 1 "quoted-hash then || echo" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          semgrep scan --config 'p\/sec #x' --error . || echo ignored/")"
+
+  # an ESCAPED quote inside a double-quoted string must not fake-close it and expose a `#`
+  # comment that would strip the trailing `|| echo` mask ⇒ FAIL (HIGH fix)
+  expect 1 "escaped-quote then || echo" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/      - run: semgrep scan --config p\/security-audit --error --exclude tests \./      - run: |\n          semgrep scan --error --config \"p\/sec \\\\\" #x\" . || echo ignored/")"
 
   # echo-wrapped scanner (`echo "semgrep scan --error ."`) is NOT a real invocation ⇒
   # FAIL (inv 1 — HIGH fix: comments/echo must not satisfy presence).
@@ -576,11 +793,13 @@ EOF
   # fleet-list parsing: comments/blank lines stripped (mirrors check-pipeline-drift).
   tfleet=$(mktemp)
   printf '# comment\n\nchris-yyau/busdriver  \n  # another\nDive-And-Dev/perch\n' > "$tfleet"
-  mapfile -t parsed < <(
-    while IFS= read -r line; do
-      line="${line%%#*}"; line="$(printf '%s' "$line" | tr -d '[:space:]')"
-      [[ -n "$line" ]] && printf '%s\n' "$line"
-    done < "$tfleet")
+  # Portable read loop — NOT `mapfile`, which macOS's Bash 3.2 lacks (this script and
+  # its self-test must run on a stock macOS maintainer box, not just the CI runner).
+  parsed=()
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [[ -n "$line" ]] && parsed+=("$line")
+  done < "$tfleet"
   rm -f "$tfleet"
   if [[ "${#parsed[@]}" -ne 2 || "${parsed[0]}" != "chris-yyau/busdriver" || "${parsed[1]}" != "Dive-And-Dev/perch" ]]; then
     echo "FAIL: [fleet parse] expected 2 clean repos, got ${parsed[*]-none}"; fail=1
