@@ -508,8 +508,16 @@ for scanner in SCANNERS:
                 if exit_masked(step_run(step), r"\bsemgrep\s+scan\b", pf):
                     reasons.append("semgrep exit masked (piped / trailing command)")
             elif scanner == "checkov":
-                if re.search(r"--soft-fail(-on)?\b", seg):
-                    reasons.append("checkov --soft-fail (findings non-blocking)")
+                # checkov non-blocking forms: --soft-fail / --soft-fail-on / its short `-s`
+                # (incl. an argparse short-flag CLUSTER `-so json` = `-s -o json`, and a
+                # quote-adjacent `'-s'`), and --hard-fail-on (narrows the default "hard-fail on
+                # ALL failed checks" set, so any use lowers coverage → fail-closed reject). The
+                # cluster regex `-[a-z]*s[a-z]*` is a single-dash short group (won't match long
+                # `--skip-path`). ACCEPTED LIMIT: adversarial shell-escaping of the flag (`\-s`,
+                # `-''s`, `$'\x2ds'`) evades the regex — the same "not a full shell lexer"
+                # boundary documented above; CI actually running checkov is the backstop.
+                if re.search(r"--soft-fail(-on)?\b|--hard-fail-on\b|(^|[\s'\"])-[a-z]*s[a-z]*([\s'\"]|$)", seg):
+                    reasons.append("checkov non-blocking flag (--soft-fail/-s/--hard-fail-on)")
                 if exit_masked(step_run(step), r"\bcheckov\b", pf):
                     reasons.append("checkov exit masked (piped / trailing command)")
             else:  # zizmor
@@ -833,6 +841,22 @@ EOF
   # checkov --soft-fail ⇒ FAIL (inv 4 — MEDIUM fix)
   expect 1 "checkov soft-fail" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#checkov -d . --skip-path tests --quiet#checkov -d . --soft-fail --quiet#')"
+
+  # checkov short `-s` (soft-fail) ⇒ FAIL
+  expect 1 "checkov -s" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#checkov -d . --skip-path tests --quiet#checkov -d . -s --quiet#')"
+
+  # checkov --hard-fail-on narrows the blocking set ⇒ FAIL
+  expect 1 "checkov --hard-fail-on" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#checkov -d . --skip-path tests --quiet#checkov -d . --hard-fail-on CKV_NEVER#')"
+
+  # checkov short-flag CLUSTER `-so json` (= `-s -o json`) soft-fails ⇒ FAIL
+  expect 1 "checkov -s cluster" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#checkov -d . --skip-path tests --quiet#checkov -d . -so json#')"
+
+  # checkov QUOTED soft-fail flag (`'-s'` survives shell quoting to checkov) ⇒ FAIL
+  expect 1 "checkov quoted -s" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E "s#checkov -d . --skip-path tests --quiet#checkov -d . '-s' --quiet#")"
 
   # PR-trigger path filter added ⇒ FAIL (inv 5 reachability)
   expect 1 "PR path filter" "$(printf '%s\n' "$COMPLIANT" | \
