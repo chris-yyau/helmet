@@ -1,3 +1,10 @@
+# [1.25.0](https://github.com/chris-yyau/helmet/compare/v1.24.0...v1.25.0) (2026-07-15)
+
+
+### Features
+
+* **scripts:** fleet scanner-invariant check with fail-closed asserter ([#76](https://github.com/chris-yyau/helmet/issues/76)) ([#79](https://github.com/chris-yyau/helmet/issues/79)) ([e530d0d](https://github.com/chris-yyau/helmet/commit/e530d0d3433c8e3123ce5698ee030222c59ab93b)), closes [#66-style](https://github.com/chris-yyau/helmet/issues/66-style) [#66](https://github.com/chris-yyau/helmet/issues/66) [#66](https://github.com/chris-yyau/helmet/issues/66)
+
 # [1.24.0](https://github.com/chris-yyau/helmet/compare/v1.23.0...v1.24.0) (2026-07-15)
 
 
