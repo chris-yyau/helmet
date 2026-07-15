@@ -81,7 +81,13 @@ except Exception:
 # is safe_load-equivalent on untrusted remote YAML. We ONLY remove the bool implicit
 # resolver (below) so GitHub's `on` key stays a string (YAML 1.1 coerces it to True).
 class WFLoader(yaml.SafeLoader):
-    pass
+    # Own a PRIVATE copy of the implicit-resolver map — the parent dict is shared across
+    # PyYAML's Loader/SafeLoader/FullLoader, so stripping it in place would disable bool
+    # coercion process-wide for every `yaml.safe_load` (harmless in our one-shot subprocess,
+    # but the copy-on-write idiom PyYAML's own add_implicit_resolver() uses is correct).
+    yaml_implicit_resolvers = {
+        ch: list(resolvers) for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
 for _ch in list(WFLoader.yaml_implicit_resolvers):
     _keep = [(t, r) for (t, r) in WFLoader.yaml_implicit_resolvers[_ch]
              if t != "tag:yaml.org,2002:bool"]
@@ -285,40 +291,64 @@ def run_neutered(run):
         return True
     return False
 
-def exit_masked(run, tool_re):
-    """True if the scanner's non-zero exit can't fail the step. Fail-closed: flag the
-    scanner PIPED into another command (`scanner | tee` — last-stage exit wins unless
-    pipefail, which we can't assume across shells), an `||` FALLBACK that swallows the
-    failure (`scanner || echo ok`, `scanner || true`), BACKGROUND execution (`scanner &`
-    — step doesn't wait on it), or a later command SEQUENCED after it on a `;`/newline
-    (`scanner; true` — the trailing command's exit wins). `&&`-chaining is NOT masking
-    (a failed scanner short-circuits the step)."""
-    # Blank quoted spans so operators INSIDE quotes (`--config 'rules|a;b.yml'`) aren't
-    # mistaken for real pipes/semicolons/backgrounds — a false-positive that would flag a
-    # legitimate mirror. Tool invocations are never quoted, so tool_re still matches.
-    run = _blank_quotes(strip_comments(run))
-    # scanner logically NEGATED (`! scanner` inverts its exit → a real failure passes the
-    # step). Detected via command_segments' own prefix stripping (single source of truth),
-    # so any intervening env-assignment / command prefix (`! FOO=bar semgrep`, `! command
-    # semgrep`) is handled. Survives only in quoted/block-scalar runs; an unquoted `!` is a
-    # YAML tag that both PyYAML and GitHub strip, so that form isn't a real weakening.
+def _pipefail(shell):
+    """Does the effective GitHub `shell` run with `-o pipefail` (so a pipe PROPAGATES a
+    failure)? `shell: bash` → yes (`-eo pipefail`); the DEFAULT (`bash -e`) and `shell: sh`
+    → no; a custom template → yes only when `-o pipefail` is a real option before `{0}`.
+    ACCEPTED LIMITS (rare/adversarial — documented, not chased): a later `+o pipefail`
+    that toggles it back off, and non-bash runners (Windows PowerShell has no pipefail
+    concept). The common GitHub shells are covered; a mirror crafting the exotic forms is
+    adversarial, same posture as the #66 shell-parse boundary."""
+    if not shell:
+        return False
+    s = str(shell)
+    if s == "bash":
+        return True
+    head = s.split("{0}", 1)[0].split()  # options precede the {0} script placeholder
+    for i, t in enumerate(head):
+        if re.match(r"^-[a-z]*o[a-z]*$", t) and i + 1 < len(head) and head[i + 1] == "pipefail":
+            return True
+    return False
+
+def exit_masked(run, tool_re, pipefail):
+    """True if the scanner's non-zero exit can't fail the step. Walks the scanner's AND-OR
+    list and flags: `! scanner` negation; a `||` fallback that can succeed (list exits 0);
+    a background `&` (step never waits); and a pipe `|` when pipefail is OFF (the pipeline's
+    exit is the last stage's). `&&` continues the list; under pipefail a pipe propagates, so
+    the walk continues. `;`/newline ENDS the statement — a trailing command's masking is
+    errexit-dependent and, along with `&&`-errexit-exemption, is the accepted out-of-scope
+    limit (GitHub's errexit varies by shell; a mirror crafting it is adversarial). The
+    explicit invariant-4 neuters (`|| true`/`set +e`/`trap 'exit 0'`/`continue-on-error`/
+    `if:` guards/`--soft-fail`) are also caught unconditionally by run/step_neutered."""
+    run = _blank_quotes(strip_comments(run))  # operators inside quotes are literal data
     for _lead, seg, negated in command_segments(run):
         if negated and re.search(tool_re, seg):
             return True
-    # scanner piped into a following command (single `|`, not `||`).
-    if re.search(tool_re + r"[^\n;]*?(?<!\|)\|(?!\|)", run):
-        return True
-    # scanner with an `||` fallback that can swallow the failure (any RHS, not just true).
-    if re.search(tool_re + r"[^\n]*?\|\|", run):
-        return True
-    # scanner backgrounded with a single `&` (not `&&`, not a `>&`/`&>` redirect).
-    if re.search(tool_re + r"[^\n;|]*?(?<![>&])&(?![&>])", run):
-        return True
-    # scanner is not in the FINAL top-level statement (something sequenced after it).
-    stmts = [s for s in re.split(r"[;\n]", run) if s.strip()]
-    for i, s in enumerate(stmts):
-        if re.search(tool_re, s) and i != len(stmts) - 1:
-            return True
+    for m in re.finditer(tool_re, run):
+        rest = run[m.end():]
+        seen_list_op = False  # have we passed a `&&`/`||` (left the scanner's own pipeline)?
+        while True:
+            mm = re.search(r"\|\||&&|\|(?!\|)|(?<![>&])&(?![&>])|;|\n", rest)
+            if not mm:
+                break
+            op = mm.group()
+            if op == "||":
+                return True   # fallback for the AND-OR list so far → list can exit 0
+            if op == "&":
+                return True   # the whole preceding list is backgrounded → step never waits
+            if op == "&&":
+                seen_list_op = True
+                rest = rest[mm.end():].lstrip()  # continue the list (lstrip = skip continuation nl)
+                continue
+            if op == "|":
+                # A pipe in the SCANNER'S OWN pipeline (before any `&&`/`||`) masks its exit
+                # unless pipefail. A pipe AFTER `&&`/`||` belongs to a later command that runs
+                # only conditionally — not the scanner's failure — so it never masks.
+                if not seen_list_op and not pipefail:
+                    return True
+                rest = rest[mm.end():].lstrip()
+                continue
+            break  # ';' or newline — end of this statement
     return False
 
 # SCOPE — job SCHEDULABILITY (does the scanner job have a valid `runs-on`, a well-formed
@@ -420,6 +450,12 @@ jobs = doc.get("jobs", {})
 if not isinstance(jobs, dict):
     jobs = {}
 
+def _defaults_shell(d):
+    run = (d.get("defaults") or {}).get("run") if isinstance(d, dict) else None
+    return run.get("shell") if isinstance(run, dict) else None
+
+wf_shell = _defaults_shell(doc)
+
 fail = []
 
 # Invariants 1–4, per scanner: require ≥1 owning step whose job is fail-closed gated,
@@ -430,9 +466,12 @@ for scanner in SCANNERS:
     for jn, job in jobs.items():
         if not isinstance(job, dict):
             continue
+        job_shell = _defaults_shell(job)
         for step in steps_of(job):
             if not isinstance(step, dict):
                 continue
+            # pipefail is per-step: step `shell:` overrides job defaults overrides workflow.
+            pf = _pipefail(step.get("shell") or job_shell or wf_shell)
             seg = ""
             if scanner == "trivy":
                 is_action = is_trivy_action(step)
@@ -461,20 +500,20 @@ for scanner in SCANNERS:
                 ok = trivy_action_hardened(step) if is_action else trivy_cli_hardened(seg)
                 if not ok:
                     reasons.append("trivy hardening weak (scanners/severity/exit-code/scan-type)")
-                if seg and exit_masked(step_run(step), r"\btrivy\s+(?:fs|filesystem|rootfs|image|config)\b"):
+                if seg and exit_masked(step_run(step), r"\btrivy\s+(?:fs|filesystem|rootfs|image|config)\b", pf):
                     reasons.append("trivy exit masked (piped / trailing command)")
             elif scanner == "semgrep":
                 if not re.search(r"--error\b", seg):
                     reasons.append("semgrep missing --error (exits 0 on findings → fail-open)")
-                if exit_masked(step_run(step), r"\bsemgrep\s+scan\b"):
+                if exit_masked(step_run(step), r"\bsemgrep\s+scan\b", pf):
                     reasons.append("semgrep exit masked (piped / trailing command)")
             elif scanner == "checkov":
                 if re.search(r"--soft-fail(-on)?\b", seg):
                     reasons.append("checkov --soft-fail (findings non-blocking)")
-                if exit_masked(step_run(step), r"\bcheckov\b"):
+                if exit_masked(step_run(step), r"\bcheckov\b", pf):
                     reasons.append("checkov exit masked (piped / trailing command)")
             else:  # zizmor
-                if exit_masked(step_run(step), r"\bzizmor\b"):
+                if exit_masked(step_run(step), r"\bzizmor\b", pf):
                     reasons.append("zizmor exit masked (piped / trailing command)")
             if reasons:
                 weakened.append("%s: %s" % (jn, "; ".join(reasons)))
@@ -651,21 +690,42 @@ EOF
   expect 1 "semgrep no --error" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#semgrep scan --config p/security-audit --error --exclude tests .#semgrep scan --config p/security-audit --exclude tests .#')"
 
-  # scanner piped into another command (exit status = tee's, not semgrep's) ⇒ FAIL (inv 4 — HIGH fix)
-  expect 1 "piped semgrep" "$(printf '%s\n' "$COMPLIANT" | \
-    sed -E 's#(semgrep scan --config p/security-audit --error --exclude tests .)#\1 | tee out.txt#')"
-
-  # trailing no-op sequenced after the scan (step exits 0 regardless) ⇒ FAIL (inv 4 — HIGH fix)
-  expect 1 "trailing ; true checkov" "$(printf '%s\n' "$COMPLIANT" | \
-    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1; true#')"
-
-  # `|| echo` fallback swallows the failure (not just `|| true`) ⇒ FAIL (inv 4 — HIGH fix)
+  # `|| echo` fallback swallows the failure (the `||` list exits 0 regardless of shell
+  # flags) ⇒ FAIL (inv 4). `|| true`/`:`/`exit 0` are also caught by run_neutered.
   expect 1 "|| echo fallback" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 || echo ignored#')"
 
-  # backgrounded scan (`&`) — step doesn't wait on its exit ⇒ FAIL (inv 4 — HIGH fix)
+  # backgrounded scan (`&`) — the step never waits on its exit (shell-flag-independent) ⇒ FAIL
   expect 1 "backgrounded scan" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 \&#')"
+
+  # `scanner && printf ok | tee` — the pipe belongs to the &&-command (no `||` fallback,
+  # no background); the AND-OR list still exits with the scanner's failure ⇒ PASS
+  expect 0 "&& then piped report" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(semgrep scan --config p/security-audit --error --exclude tests .)#\1 \&\& printf ok | tee log#')"
+
+  # `scanner && echo ok || echo ignored` — the trailing `||` fallback makes the whole
+  # AND-OR list exit 0 when the scanner fails ⇒ FAIL (shell-flag-independent mask)
+  expect 1 "&& then || fallback" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 \&\& echo ok || echo ignored#')"
+
+  # same fallback split across a block-scalar newline (`&&`<nl>`echo || echo`) — the newline
+  # after `&&` is a continuation, not statement end ⇒ FAIL (walker continuation fix)
+  expect 1 "&& newline then || fallback" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's#      - run: checkov -d . --skip-path tests --quiet#      - run: |\n          checkov -d . --skip-path tests --quiet \&\&\n          echo ok || echo ignored#')"
+
+  # `scanner && report &` — background `&` terminates the list; the step never waits ⇒ FAIL
+  expect 1 "&& then background" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(checkov -d . --skip-path tests --quiet)#\1 \&\& report \&#')"
+
+  # `scanner | tee` under the DEFAULT shell (no pipefail) — pipeline exit is tee's ⇒ FAIL
+  expect 1 "piped no pipefail" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#(semgrep scan --config p/security-audit --error --exclude tests .)#\1 | tee log#')"
+
+  # same pipe under `shell: bash` (pipefail) — the failure propagates ⇒ PASS (no false-positive)
+  expect 0 "piped under pipefail" "$(printf '%s\n' "$COMPLIANT" | \
+    perl -0pe 's/^jobs:/defaults:\n  run:\n    shell: bash\njobs:/m' | \
+    sed -E 's#(semgrep scan --config p/security-audit --error --exclude tests .)#\1 | tee log#')"
 
   # a trap that forces exit 0 on ERR swallows the scanner's failure ⇒ FAIL (inv 4 — HIGH fix)
   expect 1 "trap exit-0 ERR" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \

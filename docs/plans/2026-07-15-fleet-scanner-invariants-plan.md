@@ -35,7 +35,12 @@ on any mirror that has *weakened* one — independent of benign customization or
 
 **Non-goals:** byte-parity; version-currency (the existing stamp scan owns that);
 converging the fleet's `with:` keys; per-repo allowlists; verifying the `changes`
-detector's shell logic (see "Residual — scope boundary").
+detector's shell logic (see "Residual — scope boundary"); **job schedulability**
+(valid `runs-on`, well-formed reusable-workflow `uses:`, non-cyclic/existent `needs:`
+graph) — removed from the implementation after review because an unschedulable job is a
+workflow GitHub *rejects loudly* (CI red/pending), not a *silent* scanner weakening, so it
+falls outside the threat model; validating it fully means reimplementing GitHub's workflow
+schema (see the #79 PR discussion).
 
 ## Canonical reference (verified against `.github/workflows/security.yml`)
 
