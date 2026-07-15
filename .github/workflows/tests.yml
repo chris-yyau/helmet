@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install PyYAML
-        run: pip install --quiet pyyaml
+        run: pip install --quiet 'pyyaml==6.0.3'  # Pin version — unpinned is a supply chain risk (the parser that validates security workflows)
       - name: Fleet scanner-invariants self-test (fixtures)
         run: ./scripts/check-fleet-scanner-invariants.sh --self-test
 

@@ -118,23 +118,69 @@ def step_with(step):
     w = step.get("with", {}) if isinstance(step, dict) else {}
     return w if isinstance(w, dict) else {}
 
-# --- scanner step matchers (bound to the REAL invocation, not a bare token) ----------
+# --- shell command extraction: ignore comments and non-command (echo/printf) text ----
+def strip_comments(run):
+    """Drop `#`-to-EOL comments so a commented invocation (`# checkov -d .`) never
+    counts as a real scanner. ponytail: naive — a `#` inside a quoted string is also
+    stripped, but that only makes presence detection STRICTER (a real scan command
+    doesn't need a bare ` #`), the safe direction for a fail-closed check."""
+    out = []
+    for line in run.splitlines():
+        m = re.search(r"(^|\s)#", line)
+        if m:
+            line = line[:m.start()]
+        out.append(line)
+    return "\n".join(out)
+
+# Non-command builtins whose ARGUMENTS must not count as an invocation
+# (`echo 'semgrep scan --error .'` is output, not a scanner).
+_NONCMD = {"echo", "printf", "print", ":", "true", "false", "cat", "test", "["}
+
+def command_segments(run):
+    """Yield (leading_tool, segment_text) for each shell command segment — split on
+    shell separators, skipping env-assignment / sudo / env / command prefixes, dropping
+    comments and echo-style output. A tool matched here sits at a real COMMAND position.
+    ponytail: does NOT unwrap `bash -c '…'`; canonical uses direct invocation, and an
+    unwrapped wrapper simply reads as 'scanner missing' (fail-closed), the safe side."""
+    segs = []
+    for part in re.split(r"(?:\n|;|&&|\|\||\||&)", strip_comments(run)):
+        toks = part.split()
+        i = 0
+        while i < len(toks) and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[i])
+                                 or toks[i] in ("env", "sudo", "command")):
+            i += 1
+        if i >= len(toks) or toks[i] in _NONCMD:
+            continue
+        segs.append((toks[i], " ".join(toks[i:])))
+    return segs
+
+# --- scanner step matchers → the matched command SEGMENT ("" if absent) --------------
 def is_trivy_action(step):
     return re.match(r"^aquasecurity/trivy-action@", step_uses(step)) is not None
 
-def is_trivy_cli(step):
-    r = step_run(step)
-    return re.search(r"\btrivy\b.*\b(fs|filesystem|rootfs|image|config)\b", r) is not None
+def trivy_cli_seg(step):
+    for lead, seg in command_segments(step_run(step)):
+        if lead == "trivy" and re.match(r"^trivy\s+(fs|filesystem|rootfs|image|config)\b", seg):
+            return seg
+    return ""
 
-def is_semgrep_scan(step):
-    return re.search(r"\bsemgrep\s+scan\b", step_run(step)) is not None
+def semgrep_seg(step):
+    for lead, seg in command_segments(step_run(step)):
+        if lead == "semgrep" and re.match(r"^semgrep\s+scan\b", seg):
+            return seg
+    return ""
 
-def is_checkov(step):
-    return re.search(r"\bcheckov\b.*(-d\b|--directory\b)", step_run(step)) is not None
+def checkov_seg(step):
+    for lead, seg in command_segments(step_run(step)):
+        if lead == "checkov" and re.search(r"(^|\s)(-d\b|--directory\b)", seg):
+            return seg
+    return ""
 
-def is_zizmor(step):
-    r = step_run(step)
-    return re.search(r"\bzizmor\b", r) is not None and re.search(r"\.github/workflows|\s\.(\s|$)", r) is not None
+def zizmor_seg(step):
+    for lead, seg in command_segments(step_run(step)):
+        if lead == "zizmor" and re.search(r"\.github/workflows|\s\.(\s|$)", seg):
+            return seg
+    return ""
 
 # --- invariant 4: is this scanner step neutered? -------------------------------------
 def run_neutered(run):
@@ -147,14 +193,19 @@ def run_neutered(run):
     return False
 
 def step_neutered(job, step):
-    if truthy(job.get("continue-on-error")):
-        return True
-    if truthy(step.get("continue-on-error")):
-        return True
+    # continue-on-error is safe ONLY if absent or literal `false`. Literal `true` OR any
+    # ${{ }} expression (which could evaluate true at runtime) → cannot certify the scan
+    # blocks → FAIL. `truthy()` alone would miss the expression form (a fail-open hole).
+    for coe in (job.get("continue-on-error"), step.get("continue-on-error")):
+        if coe is not None and norm_expr(coe) != "false":
+            return True
+    # A step-level `if:` must keep the scan UNCONDITIONAL: absent / always() / success() /
+    # true only. An event guard (`github.event_name == 'push'` skips PRs), a constant-false,
+    # or any other ${{ }} expression could skip the scan on the very events it must cover.
     sif = norm_expr(step.get("if"))
-    if sif is not None and (sif == "false" or sif.startswith("false &&")):
+    if sif is not None and sif not in ("always()", "true", "success()"):
         return True
-    if run_neutered(step_run(step)):
+    if run_neutered(strip_comments(step_run(step))):
         return True
     return False
 
@@ -245,34 +296,39 @@ for scanner in SCANNERS:
         for step in steps_of(job):
             if not isinstance(step, dict):
                 continue
+            seg = ""
             if scanner == "trivy":
                 is_action = is_trivy_action(step)
-                if not (is_action or is_trivy_cli(step)):
+                seg = trivy_cli_seg(step)
+                if not (is_action or seg):
                     continue
             elif scanner == "semgrep":
-                if not is_semgrep_scan(step):
+                seg = semgrep_seg(step)
+                if not seg:
                     continue
             elif scanner == "checkov":
-                if not is_checkov(step):
+                seg = checkov_seg(step)
+                if not seg:
                     continue
             else:  # zizmor
-                if not is_zizmor(step):
+                seg = zizmor_seg(step)
+                if not seg:
                     continue
             candidates.append((jn, step))
             reasons = []
             if not gate_ok(job):
                 reasons.append("job gate not fail-closed")
             if step_neutered(job, step):
-                reasons.append("step neutered (continue-on-error/|| true/set +e/if:false)")
+                reasons.append("step neutered (continue-on-error/if-guard/|| true/set +e)")
             if scanner == "trivy":
-                ok = trivy_action_hardened(step) if is_trivy_action(step) else trivy_cli_hardened(step_run(step))
+                ok = trivy_action_hardened(step) if is_action else trivy_cli_hardened(seg)
                 if not ok:
                     reasons.append("trivy hardening weak (scanners/severity/exit-code/scan-type)")
             elif scanner == "semgrep":
-                if not re.search(r"--error\b", step_run(step)):
+                if not re.search(r"--error\b", seg):
                     reasons.append("semgrep missing --error (exits 0 on findings → fail-open)")
             elif scanner == "checkov":
-                if re.search(r"--soft-fail(-on)?\b", step_run(step)):
+                if re.search(r"--soft-fail(-on)?\b", seg):
                     reasons.append("checkov --soft-fail (findings non-blocking)")
             if reasons:
                 weakened.append("%s: %s" % (jn, "; ".join(reasons)))
@@ -438,6 +494,23 @@ EOF
   # semgrep without --error ⇒ FAIL (inv 1/fail-open — HIGH fix)
   expect 1 "semgrep no --error" "$(printf '%s\n' "$COMPLIANT" | \
     sed -E 's#semgrep scan --config p/security-audit --error --exclude tests .#semgrep scan --config p/security-audit --exclude tests .#')"
+
+  # echo-wrapped scanner (`echo "semgrep scan --error ."`) is NOT a real invocation ⇒
+  # FAIL (inv 1 — HIGH fix: comments/echo must not satisfy presence).
+  expect 1 "echo-wrapped semgrep" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's#      - run: semgrep scan --config p/security-audit --error --exclude tests .#      - run: echo "semgrep scan --error ."#')"
+
+  # commented invocation (`-d` only inside a `# comment`) is stripped ⇒ FAIL (inv 1 — HIGH fix).
+  expect 1 "commented checkov" "$(printf '%s\n' "$COMPLIANT" | \
+    sed -E 's@      - run: checkov -d . --skip-path tests --quiet@      - run: checkov --version  # checkov -d .@')"
+
+  # expression-valued continue-on-error (could evaluate true) ⇒ FAIL (inv 4 — HIGH fix).
+  expect 1 "expr continue-on-error" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/(      - run: checkov -d \. --skip-path tests --quiet)/      - continue-on-error: \\\${{ github.event_name == 'pull_request' }}\n        run: checkov -d . --skip-path tests --quiet/")"
+
+  # step-level event-guard if: (skips the scan on PRs) ⇒ FAIL (inv 4 — HIGH fix).
+  expect 1 "step event-guard if" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    "s/(      - run: checkov -d \. --skip-path tests --quiet)/      - if: github.event_name == 'push'\n        run: checkov -d . --skip-path tests --quiet/")"
 
   # dropped always() ⇒ FAIL (inv 2)
   expect 1 "dropped always()" "$(printf '%s\n' "$COMPLIANT" | \
