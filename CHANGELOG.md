@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/chris-yyau/helmet/compare/v1.23.0...v1.24.0) (2026-07-15)
+
+
+### Features
+
+* **security:** broaden Section N dep-path coverage to Rust/Swift manifests ([#70](https://github.com/chris-yyau/helmet/issues/70)) ([#78](https://github.com/chris-yyau/helmet/issues/78)) ([59014d6](https://github.com/chris-yyau/helmet/commit/59014d6c9b104bef68a1338351fbc40307b37eba))
+
 # [1.23.0](https://github.com/chris-yyau/helmet/compare/v1.22.7...v1.23.0) (2026-07-14)
 
 
