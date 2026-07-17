@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/chris-yyau/helmet/compare/v1.25.2...v1.26.0) (2026-07-17)
+
+
+### Features
+
+* **ci:** add pinned-tool staleness sweep and refresh stale pins ([#67](https://github.com/chris-yyau/helmet/issues/67)) ([#85](https://github.com/chris-yyau/helmet/issues/85)) ([df9c7ac](https://github.com/chris-yyau/helmet/commit/df9c7ac8ce1888a46e46c58560018a6b87574c68))
+
 ## [1.25.2](https://github.com/chris-yyau/helmet/compare/v1.25.1...v1.25.2) (2026-07-17)
 
 
