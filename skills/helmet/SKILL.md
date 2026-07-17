@@ -3681,6 +3681,10 @@ concurrency:
   group: scheduled-cve-scan-${{ github.ref }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   trivy-scheduled:
     name: Dormant CVE sweep
@@ -3753,6 +3757,7 @@ jobs:
           fi
 
           gh label create dependency-cve \
+            --repo "$REPO" \
             --color d73a4a \
             --description "Dormant CVE found by the scheduled trivy sweep" \
             --force
