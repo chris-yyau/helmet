@@ -1,3 +1,10 @@
+## [1.25.1](https://github.com/chris-yyau/helmet/compare/v1.25.0...v1.25.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **skill:** close A0 precondition gap; add scheduled CVE re-scan ([#82](https://github.com/chris-yyau/helmet/issues/82), [#64](https://github.com/chris-yyau/helmet/issues/64)) ([#83](https://github.com/chris-yyau/helmet/issues/83)) ([ce5f2cd](https://github.com/chris-yyau/helmet/commit/ce5f2cd3d61e3bdfb22057f7846df4188624cc49))
+
 # [1.25.0](https://github.com/chris-yyau/helmet/compare/v1.24.0...v1.25.0) (2026-07-15)
 
 
