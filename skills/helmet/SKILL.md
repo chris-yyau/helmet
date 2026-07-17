@@ -17,8 +17,9 @@ Four-phase repo onboarding: **Phase A** bootstraps test infrastructure (language
 
 **Phase A (Test Infrastructure):**
 - Onboarding an existing repo that has application code but no test suite
-- Starting a new project and want test infrastructure from the start
 - CI audit found missing test infrastructure (e.g., Codecov marked N/A)
+
+Phase A needs both a language manifest and application source — see A0. A config-only scaffold (`package.json`, no source) has nothing to test yet; loose source with no manifest has nowhere to install test deps. Both are turned away with a message naming what's missing.
 
 **Phase B (CI/CD Pipeline):**
 - Onboarding a new repo into the CI pipeline
@@ -55,21 +56,45 @@ Bootstrap test infrastructure for repos with testable code but no tests. Detects
 ## When to Use
 
 - Onboarding an existing repo that has application code but no test suite
-- Starting a new project and want test infrastructure from the start
 - CI audit found missing test infrastructure (e.g., Codecov marked N/A)
 
 ## A0. Precondition Check
 
 Before running detection, verify the repo has testable application code.
 
-**A repo is "testable" when BOTH conditions are met:**
-1. At least one language config file exists: `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `requirements.txt`, `Package.swift`, or a `*.xcodeproj` directory
-2. At least one non-test source file exists in that language (`.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`, `.rs`, `.swift`)
+**A repo is "testable" when at least one *single language* satisfies BOTH conditions:**
+1. A language config file exists: `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `requirements.txt`, `Package.swift`, or a `*.xcodeproj` directory
+2. A non-test source file exists **in that same language** (`.ts`/`.tsx`/`.js`/`.jsx` for `package.json`; `.go` for `go.mod`; `.rs` for `Cargo.toml`; `.py` for `pyproject.toml`/`setup.py`/`requirements.txt`; `.swift` for `Package.swift`/`*.xcodeproj`)
+
+**Evaluate the pair per language, never globally.** A repo with `package.json` and only `app.py` has a manifest and has source, but no *language* has both — JS has a manifest with nothing to test, Python has source with nothing to install into. It is not testable, and a global "some manifest exists AND some source exists" reading would wrongly admit it.
 
 **Exclude from source file count:** `node_modules/`, `vendor/`, `.git/`, `dist/`, `build/`, generated files.
 
-**If NEITHER condition is met** (no config file AND no source files), stop and report:
-> "This repo has no testable application code. Test infrastructure is not applicable. Consider shellcheck for shell scripts or JSON schema validation for config files."
+Both are load-bearing, and the guard below stops on **either** being unmet — not only on both. Condition 2 is what there is to test. Condition 1 is what setup writes *into*: A1b reads dependencies from the manifest to pick a framework, and A2 installs dev-deps through it (`cargo add --dev`, `package.json` edits, `Package.swift`). Nothing in Phase A creates a missing manifest, so admitting a source-only repo would pass A0 and then fail at install.
+
+In a mixed repo, A0 passes if **any** language has the pair; the languages that don't are reported per A1a and skipped, not set up.
+
+**Guard — classify each language first, then decide for the repo. Never stop on a single language's verdict.**
+
+**Step 1 — classify every language showing any signal** (a config file, source files, or both):
+
+| Config | Source | Class | Meaning |
+|--------|--------|-------|---------|
+| yes | yes | **complete** | set this language up |
+| yes | no | **scaffold** | manifest with nothing to test |
+| no | yes | **unmanaged** | source with nowhere to install test deps |
+
+**Step 2 — decide for the repo:**
+
+- **At least one language is `complete`** → **proceed to A1** with those languages. Report each `scaffold` / `unmanaged` language as *skipped* using the wording below, then continue. Do **not** stop — a repo with `package.json` (no JS source) plus a working `go.mod` + `.go` sets up Go and skips JS.
+- **No language is `complete`** → **stop**, using the message that fits what was found:
+  - **Nothing at all** (no config, no source):
+    > "This repo has no testable application code. Test infrastructure is not applicable. Consider shellcheck for shell scripts or JSON schema validation for config files."
+  - **Only `scaffold`** — the fix is to write application code first, not to install a test framework against nothing:
+    > "Found `<config file>` but no application source files. This looks like an empty scaffold — there is nothing to test yet. Re-run helmet once the first source file lands."
+  - **Only `unmanaged`** — loose `.rs`/`.go`/`.py` with no manifest: detectable but not set-up-able. Name the missing manifest:
+    > "Found `<N>` `<language>` source files but no `<expected manifest>`. Helmet installs test dependencies through the manifest and cannot create one for you. Run `<cargo init / npm init / go mod init / swift package init>` first, then re-run helmet."
+  - **A mix of `scaffold` and `unmanaged`** → report each language with its own message above. Do not collapse them into one.
 
 ## A1. Detection
 
@@ -88,6 +113,8 @@ Detect languages in order of confidence. Check config files first (highest signa
 | `Package.swift`, `*.xcodeproj` (directory, not file) | Swift |
 
 **Fallback — file extension count** (when no config file found for a language):
+
+This fallback **identifies** a language; it does not make that language set-up-able. A2 installs dev-deps through the manifest and never creates one, so a language detected only by extension count has no install target. A0 already rejects the whole-repo case (source, no config). In a mixed repo where one language has a manifest and another doesn't, set up the languages that have one and report the others as needing `<manifest> init` first — do not attempt an install against a missing manifest.
 
 | Extensions | Language |
 |------------|----------|
@@ -1327,6 +1354,7 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **Commitlint** | Enforce Conventional Commits format (open-source repos only) | `commitlint.config.mjs` + `commitlint` job in `tests.yml` |
 | **semantic-release** | Auto version bump + changelog + GitHub Release (open-source repos only) | `.releaserc.json` + `.github/workflows/release.yml` |
 | **OpenSSF Scorecard** | Security health score (18 checks, weekly cron + push) | `.github/workflows/scorecard.yml` |
+| **Scheduled CVE Re-scan** | Weekly trivy sweep for CVEs disclosed since the last PR scan — opens a `dependency-cve` issue and fails the run | `.github/workflows/scheduled-cve-scan.yml` |
 | **SECURITY.md** | Vulnerability disclosure policy | `SECURITY.md` at repo root |
 | **Dependabot** | Security alerts + automated version update PRs (GitHub-native) | `.github/dependabot.yml` |
 | **Dependabot auto-merge** | On opted-in repos (`vars.DEPENDABOT_AUTO_APPROVE=true`): approves AND enqueues auto-merge for patch (any) + safe minor (dev/indirect/github_actions). On opted-out / enterprise-restricted repos: annotate-only — posts manual-review comment for major + production-direct minor; safe bumps merged by hand | `.github/workflows/dependabot-auto-merge.yml` |
@@ -1371,6 +1399,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | Security backstop | `[ -f .github/workflows/security.yml ]` | File exists |
 | Pinact workflow | `[ -f .github/workflows/pinact.yml ]` | File exists |
 | Scorecard workflow | `[ -f .github/workflows/scorecard.yml ]` | File exists |
+| Scheduled CVE re-scan | `[ -f .github/workflows/scheduled-cve-scan.yml ]` | File exists |
 | Release workflow | `[ -f .github/workflows/release.yml ]` | File exists (N/A for non-release repos) |
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
@@ -2038,6 +2067,7 @@ Combine SBOM generation, license compliance, and vulnerability scanning into a s
 | **Push to main** | SBOM generation (Syft), Trivy license + vuln scan, Cosign keyless sign (if release artifact) | `tests.yml` `compliance` job (`if: github.event_name == 'push'`) | SBOM is a release-artifact concern, not a per-PR concern — generating it for unmerged code wastes minutes and produces unused artifacts |
 | **Release** (`release: types: [published]`) | GitHub-native build provenance attestation (when eligible — see Section D) + Cosign keyless sign for binaries | separate `release.yml` / `release-build.yml` | OIDC + attestations need release context, isolated permissions |
 | **Weekly** (cron) | OpenSSF Scorecard (18 security practices) | `scorecard.yml` | Repo-level posture doesn't change per-commit; weekly catches drift in the practice score |
+| **Weekly** (cron) | Trivy dependency re-scan against the current CVE database | `scheduled-cve-scan.yml` | The PR gate only fires on PRs/pushes — a CVE disclosed against an already-pinned dep stays dormant until some unrelated PR happens to re-run trivy. Time, not the diff, is the trigger |
 
 This matches ChatGPT's "PR = lightweight, push = artifact, release = signing, weekly = posture" recommendation — the compliance and scorecard jobs are already gated to non-PR triggers; PR-time scanning is delegated to `security.yml`. Don't move SBOM generation onto PR triggers — it would burn minutes and storage on artifacts that never ship.
 
@@ -3595,6 +3625,288 @@ See `.github/workflows/bypass-audit.yml` in the helmet repo for the full templat
 - **Honest about scope** — see Key Decisions section on what this does and doesn't catch.
 
 **N/A condition:** If `enforce_admins: true` on the repo's branch protection, this workflow provides no value (admins can't bypass in the first place). Safe to omit.
+
+#### Q. Scheduled CVE Re-scan (all repos)
+
+The `Dependency CVEs` job in `security.yml` runs only on PRs and security-relevant pushes. Between those events, a **newly-disclosed** CVE against an already-pinned dependency sits undetected — a repo's `main` can be red against the current CVE database while its last scan (weeks ago) was green. A weekly sweep surfaces those proactively instead of incidentally on the next unrelated PR.
+
+**Workflow** (`.github/workflows/scheduled-cve-scan.yml`):
+
+````yaml
+name: Scheduled CVE Re-scan
+
+# The `Dependency CVEs` job in security.yml only runs on PRs and security-relevant
+# pushes. Between those events a newly-disclosed CVE against an already-pinned
+# dependency sits undetected — main can be red against the current CVE database
+# while its last scan (weeks ago) was green. This sweep surfaces those proactively.
+# See issue #64.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC — same weekly cadence as scorecard.yml, offset 1h
+  workflow_dispatch:
+
+permissions: {}
+
+# Ref-keyed, cancel-in-progress: false, per the B0 rule for non-cancellable workflows (a
+# group that won't collapse independent runs). Load-bearing for correctness, not just
+# runner minutes: runs sharing an identity serialize, so a green run cannot close the
+# tracking issue in the window between a concurrent run finding CVEs and filing them.
+#
+# `cancel-in-progress: false` protects the RUNNING scan, not the queue: GitHub keeps a
+# single pending slot per group, so a third invocation in the group evicts the pending
+# one. Benign for the same ref — the evicting run scans that ref later, so it reads the
+# same-or-newer tree against a same-or-fresher CVE database, and the superseded run had
+# nothing to add.
+#
+# Known, accepted limitation: concurrency group names are CASE-INSENSITIVE while git refs
+# and issue titles are case-sensitive, so `refs/heads/Main` and `refs/heads/main` share
+# one group but keep separate issues. The group partition is therefore COARSER than the
+# issue partition. Coarser is safe for the race this group exists to prevent (extra
+# serialization, never less), and separate issues mean no state conflation. The only cost
+# is that a pending scan for a case-variant ref can be evicted by the other's run — worst
+# case it waits for the next weekly cron, i.e. bounded by the sweep's own cadence. Not
+# worth working around; expression syntax has no hash/normalize to key on instead.
+#
+# INVARIANT: this group and the issue title below MUST key on the SAME value, and that
+# value is the FULL `github.ref` — never `github.ref_name`. A branch and a tag can share a
+# short name, and ref_name collapses both to `main`. That is wrong twice over: keyed on
+# ref_name they share ONE issue, so a clean scan of tag `main` closes vulnerable branch
+# `main`'s issue (different trees, conflated state — serializing them does not make their
+# scan states equivalent); keyed on ref for the group but ref_name for the title they run
+# concurrently against one shared issue and race. `refs/heads/main` and `refs/tags/main`
+# are distinct refs holding distinct trees, so they get distinct groups AND distinct
+# issues. Verbose in a title; correct.
+concurrency:
+  group: scheduled-cve-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  trivy-scheduled:
+    name: Dormant CVE sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Knobs mirror the `Dependency CVEs` job in security.yml. A sweep that reported
+      # findings the PR gate ignores would be pure noise — keep the two in lockstep.
+      #
+      # `output:` writes to RUNNER_TEMP, never the workspace: a repo that happens to
+      # contain a checked-in `trivy-report.txt` would otherwise leave stale content in
+      # place when trivy dies before writing, and the emptiness check below would read
+      # that repo file and file it as CVE findings.
+      - name: Scan dependencies
+        id: scan
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          skip-dirs: tests
+          format: table
+          output: ${{ runner.temp }}/trivy-report.txt
+
+      # trivy writes the table to a file, not stdout — without this the run log holds no
+      # findings at all, and the truncation notice in the issue body would point at
+      # nothing. Echo the full table so "see the run log" is a true statement.
+      - name: Print full report
+        if: steps.scan.outcome == 'failure'
+        env:
+          REPORT: ${{ runner.temp }}/trivy-report.txt
+        run: |
+          set -euo pipefail
+          if [ -s "$REPORT" ]; then
+            cat "$REPORT"
+          else
+            echo "(scan produced no report)"
+          fi
+
+      - name: Open tracking issue
+        if: steps.scan.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          REPORT: ${{ runner.temp }}/trivy-report.txt
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # A failed scan step with no report means the scanner itself broke (network,
+          # rate limit) — not a CVE. Fail loudly rather than filing a bogus issue.
+          if [ ! -s "$REPORT" ]; then
+            echo "::error::Scan failed but produced no report — infrastructure error, not a CVE finding."
+            exit 1
+          fi
+
+          gh label create dependency-cve \
+            --repo "$REPO" \
+            --color d73a4a \
+            --description "Dormant CVE found by the scheduled trivy sweep" \
+            --force
+
+          # GitHub caps issue/comment bodies at 65536 chars. A dependency-heavy repo can
+          # blow past that, and a rejected create would leave findings with no report at
+          # all. Clip a COPY for the body — the full table is in the run log, printed by
+          # the step above. Never clip $REPORT itself; the log step already ran, but a
+          # destructive edit here would strand any later reader of the file.
+          max_report=60000
+          body_report="$RUNNER_TEMP/report-for-body.txt"
+          if [ "$(wc -c < "$REPORT")" -gt "$max_report" ]; then
+            head -c "$max_report" "$REPORT" > "$body_report"
+            printf '\n... [truncated at %s chars — full table in the run log: %s]\n' \
+              "$max_report" "$RUN_URL" >> "$body_report"
+          else
+            cp "$REPORT" "$body_report"
+          fi
+
+          {
+            echo "The scheduled sweep found HIGH/CRITICAL CVEs in dependencies already on \`$REF\`."
+            echo "These are dormant: disclosed after the last PR-triggered scan, so no PR gate caught them."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo '```'
+            cat "$body_report"
+            echo '```'
+          } > "$RUNNER_TEMP/issue-body.md"
+
+          # One rolling issue per branch, updated in place. ADR-0001 sets `no dedup` as the
+          # bypass-audit standard and warns that dedup on mutable issue metadata is an
+          # insider-editable suppression primitive; two carve-outs apply here:
+          #   1. ADR-0001 §4 exempts cron *sweeps* ("a sweep genuinely needs dedup") — a
+          #      weekly duplicate would land until the CVE is patched.
+          #   2. Suppressing the issue does NOT suppress the signal. `Fail on findings` keys
+          #      on the scan outcome, not on the issue, so the run goes red regardless.
+          #      bypass-audit has no such fallback — there the issue IS the signal.
+          # ADR-0001's revisit trigger (prefer a committed ledger over metadata) stays open.
+          # Exact title match, not `--search ... in:title`: full-text search is fuzzy and
+          # taking `.[0]` blindly would let "…found on main-experimental" absorb main's
+          # report. The label already narrows this to a handful of issues, so filter in jq.
+          # Exhaustive, unpaginated-by-hand lookup: `gh issue list --limit N` caps the
+          # window, and a match falling outside it would let the failure path file a
+          # duplicate while the clean path left the original open. --paginate walks every
+          # page. The REST issues endpoint also returns PRs, hence the pull_request filter.
+          find_issues() {
+            gh api --paginate \
+              "repos/$REPO/issues?state=open&labels=dependency-cve&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select(.title == env.TITLE) | .number'
+          }
+
+          export TITLE="Dormant dependency CVEs found on $REF"
+          # First match via parameter expansion, NOT `| head -n 1`: under `set -o pipefail`
+          # head closes the pipe after one line, gh takes SIGPIPE (141), and pipefail
+          # propagates it — aborting the step in exactly the multi-match case this handles.
+          all_matches=$(find_issues)
+          existing=${all_matches%%$'\n'*}
+
+          # Comment rather than exit: a later sweep can find DIFFERENT CVEs, and the run
+          # points maintainers at this issue. Bailing early would leave it showing a stale
+          # report while the run fails on findings that appear nowhere.
+          if [ -n "$existing" ]; then
+            echo "Updating existing issue #$existing with the current report."
+            gh issue comment "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/issue-body.md"
+            exit 0
+          fi
+
+          gh issue create --repo "$REPO" \
+            --title "$TITLE" \
+            --label dependency-cve \
+            --body-file "$RUNNER_TEMP/issue-body.md"
+
+      # Without this the tracker drifts from reality: once the CVEs are patched, every
+      # later sweep is green and silent, leaving the rolling issue open forever. Closing
+      # on green is what makes an open dependency-cve issue mean "currently vulnerable".
+      - name: Close tracking issue when clean
+        if: steps.scan.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          SCANNED_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Re-running an OLD run checks out that run's original SHA, so a stale green
+          # re-run would close an issue that is still valid for today's tree — a fail-open
+          # on a security signal. Only close when we actually scanned the ref's current
+          # head. The open path needs no such guard: filing a finding is fail-closed.
+          head_sha=$(gh api "repos/$REPO/commits/$REF" --jq '.sha')
+          if [ "$SCANNED_SHA" != "$head_sha" ]; then
+            echo "Scanned $SCANNED_SHA but $REF is now at $head_sha — stale run, not closing."
+            exit 0
+          fi
+
+          # Exhaustive, unpaginated-by-hand lookup: `gh issue list --limit N` caps the
+          # window, and a match falling outside it would let the failure path file a
+          # duplicate while the clean path left the original open. --paginate walks every
+          # page. The REST issues endpoint also returns PRs, hence the pull_request filter.
+          find_issues() {
+            gh api --paginate \
+              "repos/$REPO/issues?state=open&labels=dependency-cve&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select(.title == env.TITLE) | .number'
+          }
+
+          export TITLE="Dormant dependency CVEs found on $REF"
+
+          # Close EVERY match, not just the first. Two runs racing (the weekly cron and a
+          # manual dispatch) can each find no existing issue and both create one; leaving a
+          # duplicate open would break the invariant that an open dependency-cve issue
+          # means "this branch is vulnerable right now". The close path is what reconciles
+          # that, so it must be exhaustive.
+          nums=$(find_issues)
+
+          if [ -z "$nums" ]; then
+            echo "Sweep clean, no open tracking issue for $REF — nothing to close."
+            exit 0
+          fi
+
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            echo "Closing #$n — sweep is green."
+            gh issue close "$n" --repo "$REPO" --comment \
+              "Sweep is green as of $RUN_URL — the HIGH/CRITICAL findings tracked here are gone (patched, or no longer reported by the current CVE database). Closing automatically; the next sweep opens a fresh issue if new CVEs land."
+          done <<< "$nums"
+
+      - name: Fail on findings
+        if: steps.scan.outcome == 'failure'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::Dormant HIGH/CRITICAL CVEs found on $REF — see the dependency-cve tracking issue."
+          exit 1
+````
+
+**Key points:**
+
+- **Separate workflow, not a `schedule:` trigger on `security.yml`.** The scanner jobs there gate on a `changes` paths-filter job wired into required checks; a schedule event has no PR base to diff against, so bolting a cron onto that file would drive the fail-closed branch by accident and entangle the sweep with branch protection. A standalone file keeps the required-check wiring untouched.
+- **Scanner knobs mirror the PR gate exactly** (`severity: HIGH,CRITICAL`, `ignore-unfixed: true`, `skip-dirs: tests`). Divergence here produces findings the PR gate would never flag — noise that trains maintainers to ignore the sweep. Bump both together.
+- **Dedup is an ADR-0001 carve-out.** ADR-0001 sets *no dedup* as the bypass-audit standard and warns that dedup keyed on mutable issue metadata is an insider-editable suppression primitive. Two reasons it's safe here: (1) §4 of that ADR explicitly exempts cron *sweeps* — "a sweep genuinely needs dedup", or a weekly duplicate lands until the CVE is patched; (2) the `Fail on findings` step keys on the **scan outcome, not the issue**, so a suppressed issue still leaves the run red. bypass-audit has no such fallback — there the issue *is* the signal, which is why it takes no-dedup.
+- **Closes on green.** A sweep that only ever *opens* issues drifts from reality: once the CVEs are patched, later sweeps pass silently and the rolling issue stays open forever. The success path closes every match with a comment, so an open `dependency-cve` issue reliably means "this branch is vulnerable right now" — which is what makes `gh issue list --label dependency-cve` a usable fleet view.
+- **The concurrency group is load-bearing for correctness**, not just runner minutes. Runs sharing an identity serialize, so a green run cannot close the tracking issue in the window between a concurrent run finding CVEs and filing them.
+- **Invariant: the concurrency group and the issue title key on the same value — the full `github.ref`, never `github.ref_name`.** A branch and a tag can share a short name, and `ref_name` collapses both to `main`. That breaks it two ways: keyed on `ref_name`, branch `main` and tag `main` share **one** issue, so a clean scan of the tag closes the vulnerable branch's issue — different trees, conflated state, and serializing them does not make their scan states equivalent. Keyed on `ref` for the group but `ref_name` for the title, they get different groups, run concurrently against one shared issue, and race. `refs/heads/main` and `refs/tags/main` are distinct refs over distinct trees, so they get distinct groups *and* distinct issues. Verbose in a title; correct. Collapsing the group to a constant would also violate the B0 rule that non-cancellable workflows use a group that won't collapse independent runs.
+- **`workflow_dispatch`** makes the sweep runnable on demand — useful for a fleet-wide check without waiting for Monday.
+- **Label `dependency-cve`** is auto-created on first run (idempotent, `--force`). Enables `gh issue list --label dependency-cve` across the fleet.
+
+**N/A condition:** none — every repo with dependencies benefits. A repo with no lockfile or manifest produces an empty scan and stays green.
 
 ### B4. Multi-Repo Deployment
 
