@@ -1,0 +1,186 @@
+name: Pinned-tool Staleness
+
+# The scanner pins (semgrep/checkov/zizmor in security.yml) and the semantic-release
+# set (release.yml) live inside `run:` lines, so Dependabot — which reads manifests,
+# not YAML run-commands — can never bump them. They drift silently. This monthly sweep
+# compares each against PyPI / npm latest and files a rolling tracking issue when any is
+# behind, giving issue #67's "monthly refresh" cadence a trigger instead of a reminder.
+
+on:
+  schedule:
+    - cron: "0 8 1 * *" # 1st of month, 08:00 UTC — offset from scorecard (Mon 06:00) and the CVE sweep (Mon 07:00)
+  workflow_dispatch:
+
+permissions: {}
+
+# Serialize the monthly cron against a manual dispatch so two runs can't both find no
+# existing issue and each file one. cancel-in-progress: false lets a running sweep finish.
+concurrency:
+  group: pin-staleness
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  staleness:
+    name: Pinned-tool staleness sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # curl + jq are preinstalled on ubuntu-latest; the script needs nothing else.
+      # rc: 0 = all fresh, 1 = stale (table on stdout). Any other code — 2 (lookup/setup
+      # error, no verdict) or a crash (126/127/137/…) — must fail the run, never finish
+      # green: acting on a partial/absent verdict could open a bogus issue or close a
+      # still-stale one. Fail HERE so an unexpected code can't slip past the rc==0/rc==1
+      # gates below and skip every step silently. Deliberately does NOT fail on rc==1:
+      # staleness is a maintenance nudge and the tracking issue is the signal — a
+      # perpetually-red badge for a minor version being behind is noise.
+      - name: Check pin staleness
+        id: check
+        run: |
+          set +e
+          ./scripts/check-pin-staleness.sh > "$RUNNER_TEMP/stale.md" 2> "$RUNNER_TEMP/log.txt"
+          rc=$?
+          set -e  # restore: a failed log read or GITHUB_OUTPUT write below must abort the
+                  # step, not be swallowed — a lost rc output would skip both mutation steps
+                  # AND leave this step green (a silent no-op verdict).
+          cat "$RUNNER_TEMP/log.txt"
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ "$rc" != "0" && "$rc" != "1" ]]; then
+            echo "::error::check-pin-staleness.sh exited $rc (2 = lookup/setup error, other = crash) — no verdict, failing the run."
+            exit 1
+          fi
+
+      # Issue mutation is gated on the DEFAULT branch: the pins that matter live on it, and
+      # the tracking issue is repository-wide. A workflow_dispatch on a feature branch (or a
+      # re-run of an old commit) must not open/close that shared issue off a different tree —
+      # so both the open and close steps carry the same default-branch AND current-HEAD guard.
+      - name: Open or update tracking issue
+        if: steps.check.outputs.rc == '1' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SCANNED_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Only act on a scan of the branch's current head. Re-running an OLD run checks out
+          # that run's SHA; after a pin refresh its stale findings would otherwise reopen the
+          # issue and claim the (now-fresh) branch is behind — violating "an open issue means
+          # a pin is behind right now". Symmetric to the close guard below.
+          head_sha=$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq '.sha')
+          if [[ "$SCANNED_SHA" != "$head_sha" ]]; then
+            echo "Scanned $SCANNED_SHA but $DEFAULT_BRANCH is now at $head_sha — stale run, not filing."
+            exit 0
+          fi
+
+          gh label create pinned-tool-stale \
+            --repo "$REPO" \
+            --color fbca04 \
+            --description "A run-line tool pin is behind its registry's latest release" \
+            --force
+
+          {
+            echo "The run-line tool pins below are behind their registry's latest release."
+            echo "Dependabot cannot bump them (they live in workflow \`run:\` lines, not a"
+            echo "manifest) — see issue #67. Refresh them in lockstep per that issue's discipline:"
+            echo "resolve once, smoke-test, then pin the tested values across live + template + mirrors."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            cat "$RUNNER_TEMP/stale.md"
+          } > "$RUNNER_TEMP/issue-body.md"
+
+          export TITLE="Pinned tool versions are behind latest"
+
+          # Exhaustive, hand-unpaginated lookup: --paginate walks every page so a match
+          # outside a --limit window can't let the open path file a duplicate while the
+          # close path leaves the original open. The REST issues endpoint also returns
+          # PRs — filter them out. Exact title match, not fuzzy in:title search.
+          find_issues() {
+            gh api --paginate \
+              "repos/$REPO/issues?state=open&labels=pinned-tool-stale&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select(.title == env.TITLE) | .number'
+          }
+
+          # First match via parameter expansion, NOT `| head -1`: under pipefail, head
+          # closing the pipe early makes gh take SIGPIPE and abort the step.
+          all=$(find_issues)
+          existing=${all%%$'\n'*}
+
+          if [[ -n "$existing" ]]; then
+            echo "Updating existing issue #$existing."
+            gh issue comment "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/issue-body.md"
+            exit 0
+          fi
+
+          gh issue create --repo "$REPO" \
+            --title "$TITLE" \
+            --label pinned-tool-stale \
+            --body-file "$RUNNER_TEMP/issue-body.md"
+
+      # Close on green so an open pinned-tool-stale issue always means "a pin is behind
+      # right now". The default-branch guard stops a cross-branch dispatch from closing the
+      # shared issue; the current-HEAD SHA guard below stops a re-run of an OLD default-branch
+      # commit from doing so. Both are needed: after a pin ROLLBACK (HEAD reverted to an
+      # older, now-stale pin), an old pre-rollback run scans a NEWER-pinned tree, comes up
+      # fresh, and would wrongly close the issue while HEAD is still stale — so verify we
+      # actually scanned current HEAD before closing (mirrors the CVE sweep).
+      - name: Close tracking issue when fresh
+        if: steps.check.outputs.rc == '0' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SCANNED_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Only close when the scanned commit is the default branch's current head. A
+          # re-run of an old run checks out that run's SHA; comparing it to live HEAD stops
+          # the rollback fail-open described above. Opening needs no such guard — filing a
+          # finding is fail-closed.
+          head_sha=$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq '.sha')
+          if [[ "$SCANNED_SHA" != "$head_sha" ]]; then
+            echo "Scanned $SCANNED_SHA but $DEFAULT_BRANCH is now at $head_sha — stale run, not closing."
+            exit 0
+          fi
+
+          export TITLE="Pinned tool versions are behind latest"
+
+          find_issues() {
+            gh api --paginate \
+              "repos/$REPO/issues?state=open&labels=pinned-tool-stale&per_page=100" \
+              --jq '.[] | select(.pull_request == null) | select(.title == env.TITLE) | .number'
+          }
+
+          nums=$(find_issues)
+          if [[ -z "$nums" ]]; then
+            echo "All pins fresh, no open tracking issue — nothing to close."
+            exit 0
+          fi
+
+          # Close EVERY match: two runs racing can each create one before the other's
+          # find sees it. Closing all reconciles that so the open-issue invariant holds.
+          while IFS= read -r n; do
+            [[ -n "$n" ]] || continue
+            echo "Closing #$n — all tracked pins are fresh."
+            gh issue close "$n" --repo "$REPO" --comment \
+              "All tracked run-line pins match their registry's latest release as of $RUN_URL — closing automatically. The next monthly sweep opens a fresh issue if a pin falls behind."
+          done <<< "$nums"
