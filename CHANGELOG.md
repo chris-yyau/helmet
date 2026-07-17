@@ -1,3 +1,10 @@
+## [1.25.2](https://github.com/chris-yyau/helmet/compare/v1.25.1...v1.25.2) (2026-07-17)
+
+
+### Bug Fixes
+
+* **security:** URL-encode the ref in the CVE sweep's close-on-green path ([#84](https://github.com/chris-yyau/helmet/issues/84)) ([ee5dfbc](https://github.com/chris-yyau/helmet/commit/ee5dfbc5cb37e1f7a1d82aa1811c54edb517d241))
+
 ## [1.25.1](https://github.com/chris-yyau/helmet/compare/v1.25.0...v1.25.1) (2026-07-17)
 
 
