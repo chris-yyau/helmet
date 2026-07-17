@@ -41,4 +41,4 @@ jobs:
         # Pin the semantic-release toolchain — unpinned npx resolves to latest at run time (supply-chain drift).
         # Refresh cadence tracked in issue #67. Node pin above must satisfy these engines
         # (semantic-release@25 / @semantic-release/github@12 both require Node ^22.14 || >=24.10).
-        run: npx -y -p semantic-release@25.0.6 -p @semantic-release/changelog@6.0.3 -p @semantic-release/exec@7.1.0 -p @semantic-release/git@10.0.1 -p @semantic-release/github@12.0.9 semantic-release
+        run: npx -y -p semantic-release@25.0.7 -p @semantic-release/changelog@6.0.3 -p @semantic-release/exec@7.1.0 -p @semantic-release/git@10.0.1 -p @semantic-release/github@12.0.9 semantic-release

@@ -45,6 +45,9 @@ jobs:
         run: pip install --quiet 'pyyaml==6.0.3'  # Pin version — unpinned is a supply chain risk (the parser that validates security workflows)
       - name: Fleet scanner-invariants self-test (fixtures)
         run: ./scripts/check-fleet-scanner-invariants.sh --self-test
+      # Hermetic (no network) — proves the pin-staleness extraction/classification logic.
+      - name: Pin-staleness self-test (fixtures)
+        run: ./scripts/check-pin-staleness.sh --self-test
 
   commitlint:
     runs-on: ubuntu-latest

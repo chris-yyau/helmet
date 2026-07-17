@@ -30,6 +30,8 @@ skills/           Skill definitions (1: helmet — large four-phase onboarding s
 | `./scripts/check-template-pins.sh` | Verify SKILL.md template action pins match live workflow pins (runs in the `version-drift` CI job) |
 | `./scripts/check-fleet-scanner-invariants.sh --fleet` | Assert each fleet mirror's live `security.yml` still holds the security-critical scanner invariants (fail-closed gates, trivy/semgrep/checkov/zizmor blocking, PR reachability); tolerates benign customization. Needs `gh` + PyYAML |
 | `./scripts/check-fleet-scanner-invariants.sh --self-test` | Hermetic fixtures proving the invariant asserter fails closed (runs in the `version-drift` CI job) |
+| `./scripts/check-pin-staleness.sh` | Compare the run-line tool pins (semgrep/checkov/zizmor in `security.yml`, semantic-release set in `release.yml`) against PyPI/npm latest; exit 1 + a markdown table on drift, exit 2 on lookup failure (fail-closed). Powers `pin-staleness.yml`. Needs `curl` + `jq` |
+| `./scripts/check-pin-staleness.sh --self-test` | Hermetic fixtures proving extraction + stale/fresh/error classification (runs in the `version-drift` CI job) |
 
 ## CI Workflows
 
@@ -39,6 +41,7 @@ skills/           Skill definitions (1: helmet — large four-phase onboarding s
 | `security.yml` | Push (path-filtered) + PR (all, job-level skip) | Semgrep, Checkov, Zizmor, Trivy scanners |
 | `pinact.yml` | Push to main (`.github/workflows/**` paths only) | Auto-pin GitHub Actions to SHA |
 | `scorecard.yml` | Weekly (scheduled) | OpenSSF security health score |
+| `pin-staleness.yml` | Monthly (scheduled) + dispatch | Compare run-line tool pins vs PyPI/npm latest; opens/updates/closes a rolling `pinned-tool-stale` tracking issue on drift (issue #67). Dependabot can't see these pins |
 | `release.yml` | Push to main | semantic-release: changelog, version bump, GitHub Release |
 | `bypass-audit.yml` | Push to main | Detect direct-push bypass of required checks → creates `admin-bypass` issue |
 | `dependabot-auto-merge.yml` | PR (gated on `dependabot[bot]` author) | On opt-in repos (`vars.DEPENDABOT_AUTO_APPROVE="true"` + `can_approve_pull_request_reviews:true` on workflow permissions): approves AND `gh pr merge --auto --squash` for patch (any) + safe minor (dev/indirect/github_actions). On opt-out repos (default, including enterprise orgs that disable GitHub Actions PR approval): annotate-only — comment fires for both safe-and-manual and unsafe (major / production-direct minor) bumps; safe bumps are merged by hand. Helmet repo itself is opted in |
