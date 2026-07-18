@@ -1671,6 +1671,49 @@ CONTEXTS=$(jq -nc '$ARGS.positional' --args \
   "commitlint" \
   "Actions security" "Code security" "Dependency CVEs" "IaC misconfig")
 
+# Fail closed BEFORE mutating branch protection, not just after via the
+# post-hoc full audit below. Two checks:
+#   1. The placeholder above was never replaced — the API would then receive
+#      duplicate literal "<test check name>" contexts and zero real test
+#      checks, so a solo repo's merge gate would silently require lint and
+#      scanners and NO TEST AT ALL.
+#   2. CONTEXTS doesn't match .github/required-checks.lock's required names
+#      (when the lock already exists — first-time onboarding has no lock
+#      yet, so skip this half when the file is absent) — catching a
+#      transposed/misspelled test name before it reaches the server instead
+#      of discovering it only when surface (b) reports drift afterward.
+#   Empty counts as unreplaced. `TEST_CHECKS=()` produces no lines for the
+#   placeholder grep to match, and check 2 is skipped entirely when the lock is
+#   absent — so on FIRST-TIME onboarding, the one run with no lock to fall back
+#   on, an empty array would clear both halves and write a gate of lint plus
+#   scanners and no test. Check the length before the contents.
+if (( ${#TEST_CHECKS[@]} == 0 )); then
+  echo "error: TEST_CHECKS is empty — set this repo's actual test check names from the Step 1 discovery before applying" >&2
+  exit 1
+fi
+if printf '%s\n' "${TEST_CHECKS[@]}" | grep -Eqx '<test check name>|[[:space:]]*'; then
+  echo "error: TEST_CHECKS contains the placeholder or a blank entry — replace with this repo's actual test check names from Step 1 before applying" >&2
+  exit 1
+fi
+# Resolve the repo root here — it is not defined anywhere else in this flow.
+# Left undefined, `"$REPO_ROOT/.github/..."` expands to `/.github/...`, the
+# -f test is false, and this entire lock-vs-CONTEXTS check silently skips
+# right before branch protection is overwritten. Fail closed if git cannot
+# resolve it rather than falling through to an unchecked PUT.
+REPO_ROOT=$(git rev-parse --show-toplevel) || {
+  echo "error: cannot resolve repo root — refusing to apply branch protection unchecked" >&2
+  exit 1
+}
+if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
+  LOCK_NAMES=$(jq -r '.required[].name' "$REPO_ROOT/.github/required-checks.lock" | LC_ALL=C sort)
+  CONTEXT_NAMES=$(jq -r '.[]' <<<"$CONTEXTS" | LC_ALL=C sort)
+  if [[ "$LOCK_NAMES" != "$CONTEXT_NAMES" ]]; then
+    echo "error: CONTEXTS does not match .github/required-checks.lock's required names — reconcile before applying:" >&2
+    diff <(echo "$LOCK_NAMES") <(echo "$CONTEXT_NAMES") >&2
+    exit 1
+  fi
+fi
+
 jq -n --argjson ctx "$CONTEXTS" \
   '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
   | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
@@ -1712,12 +1755,13 @@ A third failure mode that doesn't depend on the lock at all but compounds with t
 
 3. **Cross-workflow check-name collision.** Two workflows post a status check under the same effective name. Branch protection identifies required checks by name only — when names collide, GitHub's API picks one reporter and silently ignores the other. Accidental copy-paste, ill-considered renames, and matrix templates that resolve identically across workflows are all common sources. The collision is invisible until the wrong reporter's status determines merge eligibility.
 
-All three are addressed by recording each required check in `.github/required-checks.lock` alongside the workflow file and expected reporting app, and running `scripts/check-required-checks.sh` to verify drift across four surfaces:
+All three are addressed by recording each required check in `.github/required-checks.lock` alongside the workflow file and expected reporting app, and running `scripts/check-required-checks.sh` to verify drift across five surfaces:
 
 - **(a) Lock vs workflow source** — every required entry maps to a job (by `name:` field or bare job key) in the declared workflow file. Catches mismatched renames before deploy.
 - **(b) Lock vs branch protection** — `lock.required[].name` (set) equals server's `required_status_checks.contexts` (set). Catches lock-vs-server desync.
 - **(c) Lock vs reporter** — the most recent check-run for each required name has `app.slug == source_app`. Catches integration migration / spoofing.
 - **(d) Workflow check-name uniqueness** — every effective check name across all workflows is globally unique. Catches collisions before they get promoted into the lock; runs even when the lock is empty (early onboarding).
+- **(e) Merge-gate registry completeness** — every job in a `pull_request`-triggered workflow is recorded in the lock, under `.required` or `.advisory`. Unlike (a)-(d) this is not an inconsistency check: the lock, the workflows, and the server can all agree perfectly while the gate requires lint and scanners and NO TEST AT ALL because the lock simply omits the test job — fail-open, and invisible to every other surface.
 
 **Lock file** (`.github/required-checks.lock`) — JSON, declarative, no `_doc` keys are interpreted by tools (they're for humans):
 
@@ -1755,8 +1799,8 @@ Surface (a) compares the lock's `name` against `<base> (<matrix_value>)`; surfac
 **Drift detector** (`scripts/check-required-checks.sh`) — exit 0 = clean, exit 1 = drift, exit 2 = config error.
 
 ```bash
-./scripts/check-required-checks.sh                    # full check (a)+(b)+(c)+(d)
-./scripts/check-required-checks.sh --local-only       # (a)+(d) only — no API calls
+./scripts/check-required-checks.sh                    # full check (a)+(b)+(c)+(d)+(e)
+./scripts/check-required-checks.sh --local-only       # (a)+(d)+(e) only — no API calls
 ./scripts/check-required-checks.sh --strict-remote    # turn (b)/(c) "couldn't verify" into drift
 ./scripts/check-required-checks.sh --owner X --repo Y # override repo target
 ```
@@ -1771,7 +1815,7 @@ Surface (a) compares the lock's `name` against `<base> (<matrix_value>)`; surfac
 1. Edit `.github/required-checks.lock` (lock).
 2. Edit the workflow's `name:` field or job key (source).
 3. Run `gh api -X PATCH repos/OWNER/REPO/branches/main/protection/required_status_checks` with the updated contexts (server). Use PATCH not PUT — see B4b for the idempotent pattern.
-4. Run `scripts/check-required-checks.sh` and confirm zero drift on all four surfaces.
+4. Run `scripts/check-required-checks.sh` and confirm zero drift on all five surfaces.
 
 Skipping any step leaves the surfaces out of sync, which is exactly what the lock is supposed to prevent.
 

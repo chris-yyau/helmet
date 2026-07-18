@@ -441,6 +441,29 @@ check "T9k job name: wins; a step name: is not mistaken for it" 1 \
   +"'Job Display Name'" -"'a step name'"
 rm -f "$ROOT/.github/workflows/named.yml"
 
+# T9l: surface (a) shares the (d)/(e) hardened collector's indent/quote
+# tolerance. A lock entry for a quoted, 4-space-indented job key with a
+# quoted `"name":` display value must resolve cleanly — before this fix (a)
+# used a separate, unhardened parser (exactly-two-space unquoted job keys,
+# four-space unquoted `name:` only) and reported "job key not found" even
+# though (d)/(e) already recognized the same job (Greptile PR #89 P1).
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+jq '.required += [{"name":"Unit Tests Quoted","workflow":".github/workflows/quoted-a.yml","job":"unit-quoted","source_app":"github-actions"}]' \
+  "$ROOT/.github/required-checks.lock" > "$ROOT/l.tmp" && cat "$ROOT/l.tmp" > "$ROOT/.github/required-checks.lock"
+cat > "$ROOT/.github/workflows/quoted-a.yml" <<'YAML'
+name: Quoted A
+on:
+  pull_request:
+jobs:
+    "unit-quoted":
+        "name": Unit Tests Quoted
+        runs-on: ubuntu-latest
+        steps: [{ run: "npm test" }]
+YAML
+check "T9l quoted job key + 4-space indent + quoted name: resolves on (a)" 0 \
+  +"ok: every lock entry maps to a workflow job" -"job key not found"
+rm -f "$ROOT/.github/workflows/quoted-a.yml"
 
 restore_ci
 

@@ -281,49 +281,57 @@ while IFS= read -r entry; do
   # is metacharacter-safe.
   # Use POSIX-portable awk (no gawk-only 3-arg `match()` or `gensub()`).
   # `cur` holds the most recent job key we entered.
+  #
+  # Indent-aware and quote-aware, mirroring the shared (d)/(e) collector
+  # below: job level is whatever indent the FIRST key under `jobs:` uses
+  # (not a hardcoded two spaces), keys may be quoted, and the display
+  # `name:` is looked for at whatever indent its first child line uses
+  # (not a hardcoded four spaces). Without this, a lock entry for a
+  # quoted or non-two-space-indented job read "job key not found" here
+  # even though surfaces (d)/(e) — sharing the hardened collector —
+  # already recognized the same job. Flow-style job bodies
+  # (`unit: { uses: ... }`) and an inline `name` inside a flow mapping
+  # are still not parsed — deferred to #88 (moving onto pyyaml).
   actual_name=$(awk -v key="$job_key" '
-    # Top-level "jobs:" header. Track depth so nested keys (env:, with:, etc.)
-    # in mappings under jobs.* do not get mistaken for top-level job keys.
-    # Allow a trailing inline `# comment` on the header line — YAML permits it
-    # and an over-strict match would silently produce false drift.
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
+    # Top-level "jobs:" header, optionally quoted. Track depth so nested keys
+    # (env:, with:, etc.) in mappings under jobs.* do not get mistaken for
+    # top-level job keys.
+    /^["'\'']?jobs["'\'']?[[:space:]]*:/ { in_jobs = 1; job_ind = -1; child_ind = -1; next }
     # Exit on the next top-level YAML key. Exclude `#` so a column-0
     # comment line between job entries (legal YAML) does not silently
     # terminate parsing — that would yield false-negative drift on
     # any job declared after the comment.
     in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }   # left jobs block
 
-    # Job key line: exactly two-space indent, identifier, then ":", optionally
-    # followed by a trailing `# comment`. Capture the key with sub() since
-    # BSD awk lacks 3-arg match().
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
-      cur = $0
-      sub(/^  /, "", cur)
-      sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      seen[cur] = 1
-      jname[cur] = ""           # default: no explicit name
-      next
-    }
-
-    # Inside the current job. The first `    name: <value>` line at the
-    # four-space level wins. Use sub() to peel the prefix, strip an inline
-    # YAML comment (a real ` #...` to end-of-line, NOT mid-token `#`), then
-    # peel optional surrounding quotes so the stored value matches the
-    # rendered check name.
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      # Strip inline comment (space-then-hash to end-of-line). The YAML
-      # comment syntax requires whitespace before the `#`, so a value like
-      # `name: foo#bar` keeps the literal `#bar`. This is lossy on quoted
-      # values containing ` #` literally (rare in GitHub Actions check
-      # names — none in the fleet today). If that becomes a concern,
-      # switch to a quote-aware parser; the simple form covers every
-      # case we hit.
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val)
-      sub(/["'\'']$/, "", val)
-      if (jname[cur] == "") jname[cur] = val
+    in_jobs && /^[[:space:]]+[^[:space:]#]/ {
+      _ind = match($0, /[^ ]/) - 1
+      if (job_ind < 0) { job_ind = _ind }
+      # Job key line: at the job-level indent, optionally quoted, then ":".
+      if (_ind == job_ind && $0 ~ /^[[:space:]]*["'\'']?[A-Za-z0-9_.-]+["'\'']?[[:space:]]*:/) {
+        cur = $0
+        sub(/^[[:space:]]*/, "", cur); sub(/[[:space:]]*:.*$/, "", cur)
+        sub(/^["'\'']/, "", cur); sub(/["'\'']$/, "", cur)
+        seen[cur] = 1
+        jname[cur] = ""           # default: no explicit name
+        child_ind = -1
+        next
+      }
+      # First deeper line fixes the job-key indent for this job. Pinning it
+      # keeps a step`s own `name:` (nested further, or dash-prefixed) from
+      # being mistaken for the job display name.
+      if (_ind > job_ind && child_ind < 0) { child_ind = _ind }
+      # Inside the current job. The first `name:` line at the pinned child
+      # indent wins. Strip an inline YAML comment (a real ` #...` to
+      # end-of-line, NOT mid-token `#`), then peel optional surrounding
+      # quotes so the stored value matches the rendered check name.
+      if (cur != "" && _ind == child_ind && $0 ~ /^[[:space:]]*["'\'']?name["'\'']?[[:space:]]*:[[:space:]]*[^[:space:]]/) {
+        val = $0
+        sub(/^[[:space:]]*["'\'']?name["'\'']?[[:space:]]*:[[:space:]]*/, "", val)
+        sub(/[[:space:]]+#.*$/, "", val)
+        sub(/^["'\'']/, "", val)
+        sub(/["'\'']$/, "", val)
+        if (jname[cur] == "") jname[cur] = val
+      }
     }
 
     END {
@@ -502,9 +510,9 @@ for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.
       # keeps a step`s own `name:` (nested further, or dash-prefixed) from
       # being mistaken for the job display name.
       if (_ind > job_ind && child_ind < 0) { child_ind = _ind }
-      if (cur != "" && _ind == child_ind && !named[cur] && $0 ~ /^[[:space:]]*name[[:space:]]*:[[:space:]]*[^[:space:]]/) {
+      if (cur != "" && _ind == child_ind && !named[cur] && $0 ~ /^[[:space:]]*["'\'']?name["'\'']?[[:space:]]*:[[:space:]]*[^[:space:]]/) {
         val = $0
-        sub(/^[[:space:]]*name[[:space:]]*:[[:space:]]*/, "", val)
+        sub(/^[[:space:]]*["'\'']?name["'\'']?[[:space:]]*:[[:space:]]*/, "", val)
         sub(/[[:space:]]+#.*$/, "", val)
         sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
         jname[cur] = val
