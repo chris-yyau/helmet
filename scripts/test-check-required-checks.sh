@@ -205,15 +205,21 @@ RUN_ARGS=(--owner o --repo r --strict-remote)
 check "T4b state1 under --strict-remote → DRIFT, exit 1" 1 \
   +"DRIFT: no recent commit (last 10) had check-runs"
 
-# ── T5: empty required array → clean skip, exit 0 both modes ──────────────
+# ── T5: empty required array → (c) skips cleanly; (e) drifts ──────────────
+# (c)'s contract is unchanged: an empty `.required` gives it nothing to verify
+# and it must say so rather than error. The EXIT CODE changed with surface (e):
+# an empty lock is precisely the zero-gate fail-open (e) exists to catch, so a
+# run now drifts on (e) while (c) still skips cleanly. Asserting BOTH keeps
+# (c)'s intent under test and records the interaction, instead of softening the
+# expectation until it stops describing the behavior.
 make_lock 0; reset_mock
 printf 'sha_head\n' > "$MOCK/commit_shas.txt"
 RUN_ARGS=(--owner o --repo r)
-check "T5a empty required → clean skip, exit 0" 0 \
-  +"nothing to verify" -"DRIFT" -"using commit:"
+check "T5a empty required → (c) skips cleanly, (e) drifts, exit 1" 1 \
+  +"nothing to verify" +"neither .required nor .advisory" -"using commit:"
 RUN_ARGS=(--owner o --repo r --strict-remote)
-check "T5b empty required under --strict-remote → clean skip, exit 0" 0 \
-  +"nothing to verify" -"DRIFT"
+check "T5b empty required under --strict-remote → same, exit 1" 1 \
+  +"nothing to verify" +"neither .required nor .advisory"
 
 # ── T6: honest summary — 1 verified + 5 missing, and a mismatch drifts ────
 make_lock 6; reset_mock
@@ -268,6 +274,198 @@ check "T8a newer-commit fetch failure + accepted older commit → strict DRIFT, 
 RUN_ARGS=(--owner o --repo r)
 check "T8b same, default mode → accepts older commit, exit 0 (lenient)" 0 \
   +"using commit: sha_old" +"every required check is reported" -"DRIFT"
+
+# ── T9: surface (e) — a test-running job that no lock entry requires ─────
+# The zero-tests-required fail-OPEN: surfaces (a)-(d) all pass (names are
+# consistent, unique, and server-matched) while the merge gate enforces no
+# test at all. Runs --local-only: (e) needs no API, and this keeps the case
+# independent of the (c) commit-walk fixtures above.
+add_job() { # job_key run_command — appends a job to ci.yml
+  cat >> "$ROOT/.github/workflows/ci.yml" <<YAML
+  $1:
+    runs-on: ubuntu-latest
+    steps: [{ run: "$2" }]
+YAML
+}
+restore_ci() { git -C "$ROOT" checkout -- . 2>/dev/null || true; }
+
+cp "$ROOT/.github/workflows/ci.yml" "$ROOT/ci.yml.bak"
+
+make_lock 6
+add_job "unit" "npm test"
+RUN_ARGS=(--local-only)
+check "T9a PR job absent from the lock -> (e) DRIFT, exit 1" 1 \
+  +"[e]" +"'unit'" +"neither .required nor .advisory" \
+  +"A test job left out here merges without ever running"
+
+# Same job, now a required lock entry -> clean. (e) keys on lock membership.
+jq '.required += [{"name":"unit","workflow":".github/workflows/ci.yml","job":"unit","source_app":"github-actions"}]' \
+  "$ROOT/.github/required-checks.lock" > "$ROOT/l.tmp" && cat "$ROOT/l.tmp" > "$ROOT/.github/required-checks.lock"
+check "T9b same job, recorded in .required -> (e) ok, exit 0" 0 \
+  +"every PR-triggered job is recorded in the lock" -"neither .required nor .advisory"
+
+# .advisory is the recorded-decision escape hatch the DRIFT message names.
+# Without this case that instruction would be untested prose.
+jq '.required |= map(select(.name != "unit")) | .advisory += [{"name":"unit","workflow":".github/workflows/ci.yml","job":"unit","source_app":"github-actions"}]' \
+  "$ROOT/.github/required-checks.lock" > "$ROOT/l.tmp" && cat "$ROOT/l.tmp" > "$ROOT/.github/required-checks.lock"
+check "T9c job moved to .advisory -> (e) accepts the recorded decision" 0 \
+  +"every PR-triggered job is recorded in the lock" -"neither .required nor .advisory"
+
+# T9d: THE POINT OF THE INVERSION. A job whose test command is spelled in a way
+# no heuristic anticipates is still caught, because (e) never inspects what the
+# job runs. The predecessor regex missed every one of these across 7 review
+# rounds; here they are all the same case.
+for probe in "mvn verify" "./gradlew check" "npm t" "deno test" \
+             "yarn workspaces foreach -A run test" "bazel coverage //..." \
+             "./scripts/weird-suite --mode ci"; do
+  cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+  make_lock 6
+  add_job "probe" "$probe"
+  check "T9d unrecorded job caught regardless of runner: $probe" 1 \
+    +"'probe'" +"neither .required nor .advisory"
+done
+
+# T9e: a job in a workflow that CANNOT gate a PR (no pull_request trigger) is
+# out of scope — requiring scheduled/release jobs would be noise, not safety.
+cat > "$ROOT/.github/workflows/nightly.yml" <<'YAML'
+name: Nightly
+on:
+  schedule:
+    - cron: "0 3 * * *"
+jobs:
+  nightly-suite:
+    runs-on: ubuntu-latest
+    steps: [{ run: "npm test" }]
+YAML
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+check "T9e schedule-only workflow is out of scope for (e)" 0 \
+  +"every PR-triggered job is recorded in the lock" -"nightly-suite"
+rm -f "$ROOT/.github/workflows/nightly.yml"
+
+# T9f: quoted YAML keys, matrix jobs, and reusable-workflow calls all reduce to
+# the same membership question — no per-shape handling needed.
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+cat >> "$ROOT/.github/workflows/ci.yml" <<'YAML'
+  delegated:
+    uses: org/shared/.github/workflows/tests.yml@abc123
+YAML
+check "T9f reusable-workflow call is a job like any other" 1 \
+  +"'delegated'" +"neither .required nor .advisory"
+
+# T9g: `pull_request` mentioned OUTSIDE the `on:` block (a jq filter, a script
+# body) must not make a schedule-only workflow in-scope. A whole-file grep got
+# this wrong against helmet's own pin-staleness.yml, demanding a lock entry for
+# a job that can never gate a PR.
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+cat > "$ROOT/.github/workflows/sweep.yml" <<'YAML'
+name: Sweep
+on:
+  schedule:
+    - cron: "0 8 1 * *"
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh api issues --jq '.[] | select(.pull_request == null) | .number'
+YAML
+check "T9g pull_request outside the on: block does not pull a job in-scope" 0 \
+  +"every PR-triggered job is recorded in the lock" -"'sweep'"
+rm -f "$ROOT/.github/workflows/sweep.yml"
+
+# T9h: quoted job keys. The parser is shared with (a) and (d), so an
+# unquoted-only key regex drops the job from EVERY surface — it never reaches
+# (e), and an unrecorded PR test job reads as covered.
+for key in '"unit"' "'unit'" 'unit '; do
+  cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+  make_lock 6
+  printf '  %s:\n    runs-on: ubuntu-latest\n    steps: [{ run: "npm test" }]\n' "$key" \
+    >> "$ROOT/.github/workflows/ci.yml"
+  check "T9h quoted/spaced job key [$key] still reaches (e)" 1 \
+    +"'unit'" +"neither .required nor .advisory"
+done
+
+# T9i: single-quoted and space-padded `on:` keys. Repos write `"on":` / `'on':`
+# to dodge the YAML 1.1 on/true coercion; missing those exempts every job in
+# the file from registry completeness.
+for onkey in '"on"' "'on'" 'on '; do
+  cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+  make_lock 6
+  { printf 'name: Quoted\n%s:\n  pull_request:\njobs:\n' "$onkey"
+    printf '  quoted-trigger:\n    runs-on: ubuntu-latest\n    steps: [{ run: "npm test" }]\n'
+  } > "$ROOT/.github/workflows/quoted.yml"
+  check "T9i on-key spelling [$onkey] is recognized as PR-triggered" 1 \
+    +"'quoted-trigger'" +"neither .required nor .advisory"
+  rm -f "$ROOT/.github/workflows/quoted.yml"
+done
+
+# T9j: YAML permits any consistent indent. A 4-space-indented job, and a job
+# whose value is an inline flow mapping, are both valid — and a parser anchored
+# to two spaces plus end-of-line drops them from (a), (d) AND (e).
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+cat > "$ROOT/.github/workflows/layout.yml" <<'YAML'
+name: Layout
+on:
+  pull_request:
+jobs:
+    deep-indent:
+        runs-on: ubuntu-latest
+        steps: [{ run: "npm test" }]
+    inline-map: { uses: org/repo/.github/workflows/tests.yml@abc123 }
+YAML
+check "T9j 4-space indent and inline flow-mapping jobs reach (e)" 1 \
+  +"'deep-indent'" +"'inline-map'" +"neither .required nor .advisory"
+rm -f "$ROOT/.github/workflows/layout.yml"
+
+# T9k: the job display `name:` must still win over the key, and a STEP name
+# must not be mistaken for it — the indent-aware parser pins job-level keys to
+# the first child indent, and this is what proves that pin holds.
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+cat > "$ROOT/.github/workflows/named.yml" <<'YAML'
+name: Named
+on:
+  pull_request:
+jobs:
+  jobkey:
+    name: Job Display Name
+    runs-on: ubuntu-latest
+    steps:
+      - name: a step name
+        run: npm test
+YAML
+check "T9k job name: wins; a step name: is not mistaken for it" 1 \
+  +"'Job Display Name'" -"'a step name'"
+rm -f "$ROOT/.github/workflows/named.yml"
+
+# T9l: surface (a) shares the (d)/(e) hardened collector's indent/quote
+# tolerance. A lock entry for a quoted, 4-space-indented job key with a
+# quoted `"name":` display value must resolve cleanly — before this fix (a)
+# used a separate, unhardened parser (exactly-two-space unquoted job keys,
+# four-space unquoted `name:` only) and reported "job key not found" even
+# though (d)/(e) already recognized the same job (Greptile PR #89 P1).
+cat "$ROOT/ci.yml.bak" > "$ROOT/.github/workflows/ci.yml"
+make_lock 6
+jq '.required += [{"name":"Unit Tests Quoted","workflow":".github/workflows/quoted-a.yml","job":"unit-quoted","source_app":"github-actions"}]' \
+  "$ROOT/.github/required-checks.lock" > "$ROOT/l.tmp" && cat "$ROOT/l.tmp" > "$ROOT/.github/required-checks.lock"
+cat > "$ROOT/.github/workflows/quoted-a.yml" <<'YAML'
+name: Quoted A
+on:
+  pull_request:
+jobs:
+    "unit-quoted":
+        "name": Unit Tests Quoted
+        runs-on: ubuntu-latest
+        steps: [{ run: "npm test" }]
+YAML
+check "T9l quoted job key + 4-space indent + quoted name: resolves on (a)" 0 \
+  +"ok: every lock entry maps to a workflow job" -"job key not found"
+rm -f "$ROOT/.github/workflows/quoted-a.yml"
+
+restore_ci
 
 # ── report ───────────────────────────────────────────────────────────────
 echo ""
