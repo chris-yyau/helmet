@@ -1653,10 +1653,22 @@ echo "$ALL_CHECKS"
 
 # Step 3: Apply via API.
 # Build the contexts JSON array from confirmed required checks using jq (handles escaping).
-# Adjust the per-repo test names ("test (ubuntu-latest)", etc.) — the security
-# scanner names are the same across all helmet-onboarded repos.
+#
+# The security scanner names are identical across all helmet-onboarded repos.
+# The TEST names are not — they are whatever this repo's test jobs are called
+# ("test (ubuntu-latest)", "coverage", "shell-tests", "unit", …). Do NOT copy
+# the scanner line and leave the test names off: that yields a repo whose
+# merge gate requires lint and scanners and NO TEST AT ALL, which is
+# internally consistent and therefore invisible to surfaces (a)-(d).
+# That exact omission is what surface (e) now catches — see below.
+# Replace TEST_CHECKS below with this repo's actual test check names from the
+# Step 1 discovery — e.g. ("test (ubuntu-latest)" "test (macos-latest)"), or
+# ("coverage" "shell-tests"), or whatever `ALL_CHECKS` actually printed.
+TEST_CHECKS=("<test check name>" "<test check name>")
+
 CONTEXTS=$(jq -nc '$ARGS.positional' --args \
-  "test (ubuntu-latest)" "test (macos-latest)" "commitlint" \
+  "${TEST_CHECKS[@]}" \
+  "commitlint" \
   "Actions security" "Code security" "Dependency CVEs" "IaC misconfig")
 
 jq -n --argjson ctx "$CONTEXTS" \
@@ -1667,6 +1679,14 @@ jq -n --argjson ctx "$CONTEXTS" \
 gh api "repos/$OWNER/$REPO" --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, allow_update_branch, delete_branch_on_merge, allow_auto_merge}'
 gh api "repos/$OWNER/$REPO/actions/permissions" --jq '{allowed_actions, sha_pinning_required}'
 gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" --jq '{strict, contexts}'
+
+# Confirm nothing was left out of the gate. Surface (e) fails (exit 1) and
+# names any pull_request-triggered job that is in neither .required nor
+# .advisory — which is how a repo silently ends up requiring zero tests.
+# Run the FULL check, not --local-only: surface (b) is what compares the lock
+# against the contexts just written above, so skipping it would pass a repo
+# whose lock lists the test job while branch protection omits it.
+./scripts/check-required-checks.sh
 ```
 
 Add patterns for any additional third-party actions the repo uses (e.g., `anchore/sbom-action@*`, `aquasecurity/trivy-action@*`, `codecov/codecov-action@*`).

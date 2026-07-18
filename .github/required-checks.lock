@@ -15,18 +15,30 @@
     "matched by any check, blocking PRs without obvious cause.",
     "",
     "The same script also enforces an independent fourth surface that does",
-    "not depend on this file at all — it runs even when `required` is empty:",
+    "not depend on this file at all \u2014 it runs even when `required` is empty:",
     "  (d) workflow check-name uniqueness across .github/workflows/*.yml.",
     "Two jobs posting status checks under the same effective name (explicit",
     "`name:` or bare job key) cause GitHub to non-deterministically pick one",
     "reporter. Catches collisions before they ever get promoted into this lock.",
+    "",
+    "A fifth surface (e) is registry COMPLETENESS rather than consistency:",
+    "every job in a pull_request-triggered workflow must appear in this file,",
+    "under `required` (it gates merge) or `advisory` (a recorded decision that",
+    "it does not). Surfaces (a)-(d) all pass on a repo whose lock simply omits",
+    "its test job \u2014 nothing is stale, nothing collides \u2014 while that repo merges",
+    "on lint and scanners alone. (e) makes that omission impossible. It does",
+    "NOT inspect what a job runs: an earlier version tried to detect test",
+    "runners by matching `npm test` / `pytest` / `go test` and review found a",
+    "new spelling it missed every round, each miss a silent fail-open. Recording",
+    "a decision per job is finite; enumerating every way to invoke a suite is",
+    "not.",
     "",
     "When you intentionally rename, remove, or add a required check:",
     "  1. Update this file.",
     "  2. Update the workflow's job `name:` (or key) to match.",
     "  3. Update branch-protection contexts via gh api PATCH",
     "     repos/OWNER/REPO/branches/main/protection/required_status_checks",
-    "     (PATCH not PUT — see SKILL.md B4b for the idempotent pattern).",
+    "     (PATCH not PUT \u2014 see SKILL.md B4b for the idempotent pattern).",
     "  4. Run scripts/check-required-checks.sh to confirm zero drift.",
     "",
     "source_app values:",
@@ -45,7 +57,7 @@
     "label content (e.g. \"ubuntu-latest\" for 1-dim, \"ubuntu-latest, 18\" for",
     "multi-dim). Surface (a) appends ` (<matrix_value>)` to the bare-key or",
     "explicit-name match before comparing against `name`. Surface (a) does",
-    "NOT parse the workflow's strategy block — it only verifies that `name`",
+    "NOT parse the workflow's strategy block \u2014 it only verifies that `name`",
     "equals `<base> (<matrix_value>)`, regardless of whether the job actually",
     "uses a matrix. Omit `matrix_value` on non-matrix jobs: setting it on a",
     "job that lacks strategy.matrix and writing a self-consistent `name` will",
@@ -92,5 +104,27 @@
       "job": "checkov"
     }
   ],
-  "advisory": []
+  "advisory": [
+    {
+      "name": "changes",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "changes",
+      "note": "path-filter helper; emits outputs consumed by the scanner jobs, gates nothing itself"
+    },
+    {
+      "name": "reports",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/security.yml",
+      "job": "reports",
+      "note": "aggregates scanner artifacts for humans; the scanners themselves are the required gates"
+    },
+    {
+      "name": "Enqueue Dependabot auto-merge",
+      "source_app": "github-actions",
+      "workflow": ".github/workflows/dependabot-auto-merge.yml",
+      "job": "auto-merge",
+      "note": "queues Dependabot PRs once the required checks pass; requiring it would gate every human PR on a Dependabot-only job"
+    }
+  ]
 }

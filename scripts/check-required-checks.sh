@@ -2,7 +2,7 @@
 #
 # check-required-checks.sh — verify required-checks.lock matches reality.
 #
-# Drift surfaces in four places, all of which can silently break merge:
+# Drift surfaces in five places, all of which can silently break merge:
 #
 #   (a) Lock vs workflow source:  a required check's `name:` (or job key
 #       when no name is set) was renamed in a .yml without updating the
@@ -26,14 +26,23 @@
 #       collisions, copy-paste duplicates, and matrix template clashes
 #       across workflows.
 #
-# Runtime order: (a) and (d) are local (no API) and run first; (b) and
-# (c) require gh API calls and run after. Output labels appear in the
-# order they ran — `[a]`, `[d]`, `[b]`, `[c]` — not alphabetically.
-# `--local-only` runs (a) and (d) only.
+#   (e) Merge-gate registry completeness: a job that can post a status
+#       check on a PR is recorded in NEITHER .required nor .advisory.
+#       Unlike (a)-(d) this is not an inconsistency — the lock, the
+#       workflows and the server can all agree perfectly while the gate
+#       enforces lint and scanners and no test at all, because the lock
+#       simply omits the test job. Fail-OPEN, and invisible to every
+#       other surface. Scoped to pull_request-triggered workflows; a
+#       scheduled or release-only job cannot gate a PR.
+#
+# Runtime order: (a), (d) and (e) are local (no API) and run first; (b)
+# and (c) require gh API calls and run after. Output labels appear in the
+# order they ran — `[a]`, `[d]`, `[e]`, `[b]`, `[c]` — not alphabetically.
+# `--local-only` runs (a), (d) and (e) only.
 #
 # Modes:
-#   ./check-required-checks.sh                      # all 4 checks (default)
-#   ./check-required-checks.sh --local-only         # skip API calls; runs (a) and (d)
+#   ./check-required-checks.sh                      # all 5 checks (default)
+#   ./check-required-checks.sh --local-only         # skip API calls; runs (a), (d), (e)
 #   ./check-required-checks.sh --strict-remote      # turn (b)/(c) "couldn't verify" into drift
 #   ./check-required-checks.sh --owner OWNER --repo REPO
 #                                                    # override repo (default
@@ -440,31 +449,67 @@ for wf in "$REPO_ROOT"/.github/workflows/*.yml "$REPO_ROOT"/.github/workflows/*.
   # inner quotes any glob metacharacters in the resolved repo path would be
   # treated as a pattern and produce a wrong `rel` value.
   rel="${wf#"$REPO_ROOT"/}"
-  collected+=$(awk -v wf="$rel" '
-    function emit(   ) {
+  # Surface (e) scope: only workflows that trigger on pull_request can gate a
+  # PR, so only their jobs must be recorded. Scheduled/release-only workflows
+  # (scorecard, cve sweeps, release) never post a PR check and are exempt.
+  # Grep is deliberately loose — a false positive costs one recorded decision,
+  # a false negative silently exempts a real gating job.
+  pr_trig=0
+  # Scan ONLY the `on:` block. A whole-file grep false-positives on any jq
+  # filter or script body that mentions `.pull_request` (helmet's own
+  # schedule-only pin-staleness.yml does exactly that), which would demand a
+  # lock entry for a job that can never gate a PR. Handles the inline form
+  # (`on: [push, pull_request]`), the block form, and the quoted `"on":`
+  # spelling some repos use to dodge the YAML 1.1 on/true coercion.
+  if awk '
+    /^["'\'']?on["'\'']?[[:space:]]*:/ { inon = 1; if ($0 ~ /pull_request/) found = 1; next }
+    inon && /^[^[:space:]#]/ { inon = 0 }
+    inon && /pull_request/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$wf"; then pr_trig=1; fi
+  collected+=$(awk -v wf="$rel" -v prt="$pr_trig" '
+    function emit(   n) {
       if (cur != "") {
         n = (named[cur] ? jname[cur] : cur)
-        printf("%s\t%s\t%s\n", n, wf, cur)
+        printf("%s\t%s\t%s\t%s\n", n, wf, cur, prt)
       }
     }
-    /^jobs:[[:space:]]*(#.*)?$/ { in_jobs = 1; next }
+    /^["'\'']?jobs["'\'']?[[:space:]]*:/ { in_jobs = 1; job_ind = -1; child_ind = -1; next }
     # See (a)-parser comment for why `#` is excluded — column-0 comment
     # lines must not terminate the in_jobs scan (false-negative risk).
     in_jobs && /^[^[:space:]#]/ { in_jobs = 0 }
-    in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
-      emit()
-      cur = $0; sub(/^  /, "", cur); sub(/:[[:space:]]*(#.*)?$/, "", cur)
-      named[cur] = 0
-      jname[cur] = ""
-      next
-    }
-    in_jobs && cur != "" && /^    name:[[:space:]]+/ && !named[cur] {
-      val = $0
-      sub(/^    name:[[:space:]]+/, "", val)
-      sub(/[[:space:]]+#.*$/, "", val)
-      sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
-      jname[cur] = val
-      named[cur] = 1
+    # Job level is whatever indent the FIRST key under `jobs:` uses, not a
+    # hardcoded two spaces — YAML permits any consistent indent, and a
+    # 4-space repo would otherwise have every job silently dropped from all
+    # of (a), (d) and (e). Keys may be quoted and may carry space before the
+    # colon, and the value may be an inline flow mapping
+    # (`unit: { uses: org/repo/.github/workflows/x.yml@sha }`), so nothing is
+    # anchored to end-of-line after the colon.
+    in_jobs && /^[[:space:]]+[^[:space:]#]/ {
+      _ind = match($0, /[^ ]/) - 1
+      if (job_ind < 0) { job_ind = _ind }
+      if (_ind == job_ind && $0 ~ /^[[:space:]]*["'\'']?[A-Za-z0-9_.-]+["'\'']?[[:space:]]*:/) {
+        emit()
+        cur = $0
+        sub(/^[[:space:]]*/, "", cur); sub(/[[:space:]]*:.*$/, "", cur)
+        sub(/^["'\'']/, "", cur); sub(/["'\'']$/, "", cur)
+        named[cur] = 0
+        jname[cur] = ""
+        child_ind = -1
+        next
+      }
+      # First deeper line fixes the job-key indent for this job. Pinning it
+      # keeps a step`s own `name:` (nested further, or dash-prefixed) from
+      # being mistaken for the job display name.
+      if (_ind > job_ind && child_ind < 0) { child_ind = _ind }
+      if (cur != "" && _ind == child_ind && !named[cur] && $0 ~ /^[[:space:]]*name[[:space:]]*:[[:space:]]*[^[:space:]]/) {
+        val = $0
+        sub(/^[[:space:]]*name[[:space:]]*:[[:space:]]*/, "", val)
+        sub(/[[:space:]]+#.*$/, "", val)
+        sub(/^["'\'']/, "", val); sub(/["'\'']$/, "", val)
+        jname[cur] = val
+        named[cur] = 1
+      }
     }
     END { emit() }
   ' "$wf")
@@ -500,6 +545,69 @@ if [[ -n "$duplicates" ]]; then
   drift=1
 else
   echo "  ok: every workflow job has a unique effective check name"
+fi
+
+# ────────────────────────────────────────────────────────────────────
+# (e) Merge-gate registry completeness — every job that can post a status
+#     check on a PR must be recorded in the lock, under .required or
+#     .advisory.
+#
+# Unlike (a)-(d) this is not an inconsistency check. The lock, the workflows
+# and the server can all agree perfectly while the gate enforces lint and
+# scanners and NO TEST AT ALL — the lock simply omits the test job, no name is
+# stale, nothing collides. Fail-OPEN, and invisible to every other surface.
+# busdriver was in exactly that state: 8 required contexts, not one a test job,
+# while its tests.yml ran coverage/shell-tests/validate on every PR.
+#
+# WHY REGISTRY MEMBERSHIP RATHER THAN "DETECT THE TEST JOBS":
+# The first implementation tried to identify test jobs by matching runner
+# invocations (`npm test`, `pytest`, `go test`, …) and requiring only those.
+# Seven review rounds each surfaced two more spellings it missed — monorepo
+# flag forms, folded scalars, shell continuations, `node --test`, quoted job
+# keys, `mvn verify`, `./gradlew check` — with no sign of converging, because
+# enumerating every way a suite can be invoked is not a finite problem. Worse,
+# every miss is a SILENT fail-open in the exact direction the surface exists to
+# prevent.
+# Inverting removes the question. We no longer ask what a job runs; we require
+# that a human recorded a decision about it. Omission stops being possible, and
+# the ~40 lines of runner heuristics are deleted rather than extended.
+#
+# Scope is limited to PR-triggered workflows — a scheduled or release-only
+# workflow cannot gate a PR, so requiring its jobs would be noise. `.advisory`
+# is the escape hatch for a PR job that legitimately should not block merge
+# (path-filter helpers, report aggregators, auto-merge plumbing).
+#
+# Local (no API), so it runs under --local-only alongside (a) and (d).
+# ────────────────────────────────────────────────────────────────────
+echo "[e] Checking merge-gate registry completeness…"
+
+# Advisory entries are an explicit operator decision that a job must not gate
+# merge, so they satisfy (e) the same way a required entry does — the surface
+# catches SILENT omission, never a recorded choice.
+#
+# Keyed on `<workflow>\t<job>`, NOT on the check name: the job key is stable
+# across matrix rendering (every combination shares one key), while names are
+# not, and any name-prefix rule that accepts `unit` → `unit (ubuntu-latest)`
+# also wrongly accepts an unrelated entry named `unit (docs)`.
+lock_recorded=$(jq -r '(.required[]?), (.advisory[]?) | "\(.workflow)\t\(.job)"' "$LOCK")
+unrecorded_jobs=$(awk -F'\t' '
+  NR == FNR { if ($0 != "\t" && $0 != "") rec[$0] = 1; next }
+  $1 == "" || $4 != "1" { next }
+  ($2 "\t" $3) in rec { next }
+  { printf("%s\t%s:%s\n", $1, $2, $3) }
+' <(printf '%s\n' "$lock_recorded") <(printf '%s' "$collected") | LC_ALL=C sort)
+
+if [[ -n "$unrecorded_jobs" ]]; then
+  echo "  DRIFT: PR job(s) not recorded in $(basename "$LOCK"):"
+  while IFS=$'\t' read -r name loc; do
+    echo "    - '$name' ($loc) can post a check on a PR but is in neither .required nor .advisory"
+  done <<< "$unrecorded_jobs"
+  echo "    A test job left out here merges without ever running. Add each to"
+  echo "    .required (it gates merge) or .advisory (a recorded decision that it"
+  echo "    does not) — see SKILL.md B4b."
+  drift=1
+else
+  echo "  ok: every PR-triggered job is recorded in the lock"
 fi
 
 # ────────────────────────────────────────────────────────────────────
