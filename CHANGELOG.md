@@ -1,3 +1,10 @@
+## [1.26.1](https://github.com/chris-yyau/helmet/compare/v1.26.0...v1.26.1) (2026-07-18)
+
+
+### Bug Fixes
+
+* **required-checks:** add surface (e) — PR jobs must be recorded in the lock ([#86](https://github.com/chris-yyau/helmet/issues/86)) ([#89](https://github.com/chris-yyau/helmet/issues/89)) ([165b0e0](https://github.com/chris-yyau/helmet/commit/165b0e0b0ae36fba793a12a60cdc061f99164027))
+
 # [1.26.0](https://github.com/chris-yyau/helmet/compare/v1.25.2...v1.26.0) (2026-07-17)
 
 
