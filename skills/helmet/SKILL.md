@@ -1384,7 +1384,7 @@ A repo that lands PRs through Cursor Cloud Shipping needs a stricter Phase B tha
 | Admin Bypass Audit | Deploy | Optional — with `enforce_admins: true` an admin cannot bypass (see P) |
 | Verify skill | — | Listed as a manual step (below) |
 
-**Verify (after B1b, or after a B4b retrofit — its `contexts` PATCH does not pin an app explicitly):**
+**Verify (after B1b, or after a B4b retrofit):**
 
 ```bash
 gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" --jq '{
@@ -4202,9 +4202,12 @@ Pure branch-protection update — no code change, no PR. Use when an existing
 repo deployed helmet's `security.yml` but the scanners aren't required-checks.
 Idempotent: re-adds existing required checks unchanged.
 
-**Shipping-mode repos:** the PATCH below preserves `enforce_admins`, but sends
-`contexts`, which lets GitHub pick each check's app. Run the "Shipping Mode"
-Verify block afterwards; if `all_actions` is false, re-apply B1b in Shipping mode.
+**Shipping-mode repos** (a `verify-*` skill on the default branch, detected as
+B1b does): the PATCH sends `checks` pinned to GitHub Actions (app_id 15368)
+instead of `contexts`, so the Shipping pins survive. A repo with a required check
+that is unpinned or pinned to another app is refused; fix it via B1b, which
+verifies who reports each check. Run the "Shipping Mode" Verify
+block afterwards.
 
 **Requires `bash`** (uses arrays — scanner names contain spaces, so POSIX
 word-splitting won't work). macOS ships bash 3.2+, sufficient.
@@ -4239,6 +4242,24 @@ for full in "${REPOS[@]}"; do
   STRICT_CUR=$(echo "$PROT_RAW" | jq -c '.strict')
   CURRENT=$(echo "$PROT_RAW" | jq -c '.contexts // []')
 
+  # Shipping repos keep every required check pinned to GitHub Actions. The
+  # contents API reads the default branch when no ref is given. A 404 on
+  # .cursor/skills means "not Shipping" only when repo contents are readable.
+  if SKILLS=$(gh api "repos/$full/contents/.cursor/skills" \
+        --jq '[.[] | select(.type=="dir" and (.name|startswith("verify-")))] | length' 2>&1); then
+    [ "$SKILLS" != 0 ] && SHIP=1 || SHIP=0
+  elif grep -q 'HTTP 404' <<<"$SKILLS" && gh api "repos/$full/contents" --silent 2>/dev/null; then
+    SHIP=0
+  else
+    echo "  ❌ cannot tell whether $full is a Shipping repo"; continue
+  fi
+  # Only re-pin what B1b already pinned: an unpinned (null/-1) or foreign-app
+  # check may not be reported by Actions, and B1b is what verifies reporters.
+  if [ "$SHIP" = 1 ] && ! echo "$PROT_RAW" | jq -e \
+       '(.checks // []) | length > 0 and all(.app_id == 15368)' >/dev/null; then
+    echo "  ❌ Shipping repo has a required check not pinned to GitHub Actions — fix it via B1b"; continue
+  fi
+
   # Discover scanners that have actually run on the repo recently — only add
   # ones with a recorded run, otherwise GitHub rejects them as required checks.
   RECENT_SHA=$(gh api "repos/$full/commits" --jq '.[0].sha' 2>/dev/null)
@@ -4247,8 +4268,9 @@ for full in "${REPOS[@]}"; do
     # --paginate is required: the default `/check-runs` page size is 30, so
     # a commit with many CI jobs (per-OS test matrix, multiple bots) could
     # silently drop a scanner from AVAILABLE. Aggregate all pages, dedup.
+    # Shipping repos pin added scanners to Actions, so only count Actions runs.
     AVAILABLE_RAW=$(gh api --paginate "repos/$full/commits/$RECENT_SHA/check-runs" \
-      --jq '.check_runs[].name' 2>/dev/null \
+      --jq "if \"$SHIP\" == \"1\" then .check_runs[] | select(.app.id == 15368) | .name else .check_runs[].name end" 2>/dev/null \
       | jq -Rs 'split("\n") | map(select(. != "")) | unique')
     AVAILABLE=${AVAILABLE_RAW:-"[]"}
   fi
@@ -4265,9 +4287,11 @@ for full in "${REPOS[@]}"; do
   # Apply (PATCH preserves other branch-protection settings; we propagate the
   # current strict value so an intentional `strict: false` repo isn't silently
   # changed). Echo a per-repo ❌ on failure so fleet runs surface errors
-  # instead of relying on stderr being noticed.
-  if ! jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" \
-        '{strict: $strict, contexts: $contexts}' \
+  # instead of relying on stderr being noticed. Shipping repos send app-pinned
+  # `checks` — `contexts` would let GitHub pick each check's app.
+  if ! jq -nc --argjson contexts "$MERGED" --argjson strict "$STRICT_CUR" --arg ship "$SHIP" \
+        'if $ship == "1" then {strict: $strict, checks: ($contexts | map({context: ., app_id: 15368}))}
+         else {strict: $strict, contexts: $contexts} end' \
        | gh api "repos/$full/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
            -X PATCH --input - --jq '{strict, contexts}'; then
     echo "  ❌ PATCH failed for $full"
