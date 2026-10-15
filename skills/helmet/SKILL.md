@@ -1610,10 +1610,13 @@ if [ "$SHIPPING_MODE" = 1 ]; then
   fi
   # Shipping pins every required check to GitHub Actions. Check the names already
   # required — the lock's AND the live protection's (the lock may be absent or
-  # stale) — against what GitHub Actions actually reported on CHECK_SHA.
+  # stale) — against what GitHub Actions actually reported on CHECK_SHA. A live
+  # check pinned to another app stops here: the PUT below would silently re-pin it.
   PROT_STDERR=$(mktemp)
   if ! LIVE=$(gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
-        --jq '((.contexts // []) + [(.checks // [])[].context]) | .[]' 2>"$PROT_STDERR"); then
+        --jq 'if any((.checks // [])[]; .app_id != null and .app_id != -1 and .app_id != 15368)
+              then error("a live required check is pinned to a non-GitHub-Actions app — re-pinning it is your call; fix it, then re-run")
+              else ((.contexts // []) + [(.checks // [])[].context]) | .[] end' 2>"$PROT_STDERR"); then
     grep -q 'HTTP 404' "$PROT_STDERR" \
       || { echo "error: cannot read live required checks:" >&2; cat "$PROT_STDERR" >&2; rm -f "$PROT_STDERR"; exit 1; }
     LIVE=""  # 404: no protection yet
