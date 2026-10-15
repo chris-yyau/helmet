@@ -1368,6 +1368,34 @@ Set up the full CI pipeline for new or existing repos: tests + coverage, action 
 | **CodeScene** | Behavioral code analysis — code health, hotspots, complexity on PRs (student account) | GitHub App + `.codescene/custom-quality-gates.json` |
 | **Admin Bypass Audit** | Detect direct-push bypass of required checks — creates `admin-bypass` issue (repos with `enforce_admins: false`) | `.github/workflows/bypass-audit.yml` |
 
+## Shipping Mode (Cursor Cloud Shipping repos)
+
+A repo that lands PRs through Cursor Cloud Shipping needs a stricter Phase B than the solo-dev default. busdriver's pr-grind posts the Shipping kick only when the repo is **private** and the default branch's protection has `enforce_admins` on, `strict` on, and every required check pinned to GitHub Actions (`app_id` 15368). Any automation that merges PRs on its own also bypasses Shipping's verification.
+
+**Settle the mode first** (the `/helmet` command does this before Phase B). The opt-in signal is the one pr-grind reads: a `verify-*` directory under `.cursor/skills/` on the default branch. B1b runs that detection right after resolving the default branch, and it forces `SHIPPING_MODE=1` whatever the user said — re-running helmet in standard mode on such a repo would otherwise silently reinstall the auto-merge workflow and turn `enforce_admins` back off. To leave Shipping mode, remove the verify skill from the default branch first; that is also what turns pr-grind's Shipping routing off.
+
+**What Shipping mode changes:**
+
+| Area | Standard mode | Shipping mode |
+|------|---------------|---------------|
+| Dependabot auto-merge (B1b workflow permissions, component L) | Deploy `dependabot-auto-merge.yml`; probe approval, set `DEPENDABOT_AUTO_APPROVE` | Do **not** deploy it (remove it if present). Set `can_approve_pull_request_reviews: false`, delete `DEPENDABOT_AUTO_APPROVE`, cancel auto-merge queued on open PRs. `dependabot.yml` stays — its PRs land like any other |
+| Branch protection (B1b) | `enforce_admins: false`, `contexts` | `enforce_admins: true`, `strict: true`, `checks` pinned to `app_id` 15368 |
+| Preconditions | — | Repo is private, and every `.required` entry in `.github/required-checks.lock` has `source_app: github-actions`. Helmet **reports** a violation and stops; it never flips visibility or drops a check on its own |
+| Admin Bypass Audit | Deploy | Optional — with `enforce_admins: true` an admin cannot bypass (see P) |
+| Verify skill | — | Listed as a manual step (below) |
+
+**Verify (after B1b, or after a B4b retrofit — its `contexts` PATCH does not pin an app explicitly):**
+
+```bash
+gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" --jq '{
+  enforce_admins: .enforce_admins.enabled, strict: .required_status_checks.strict,
+  all_actions: ((.required_status_checks.checks // []) | length > 0 and all(.app_id == 15368))}'
+gh api "repos/$OWNER/$REPO" --jq '{private}'
+# All four must be true.
+```
+
+**Manual step — the verify skill.** Shipping needs a repo-specific `.cursor/skills/verify-<name>/SKILL.md` telling the cloud agent how to verify a PR (build, test, what to check by hand). Helmet does not generate it — it is product knowledge. Use `Dive-And-Dev/jikdak`'s `.cursor/skills/verify-jikdak/` as the template and land it in its own PR; until it is on the default branch, the repo is not opted in.
+
 ## Default Behavior: Audit Current Repo
 
 When this skill is invoked without a specific task (e.g., user runs `/ci-pipeline-setup` or says "audit CI"), run a full checklist against the current repo. Check every component below using the exact commands shown. Present results as a table with pass/fail/N-A status.
@@ -1403,7 +1431,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | Release workflow | `[ -f .github/workflows/release.yml ]` | File exists (N/A for non-release repos) |
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
-| Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config) |
+| Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config). **Shipping mode: inverted** — the file must be ABSENT |
 | Required-checks lock | `[ -f .github/required-checks.lock ]` | File exists (canonical name + source-app registry — see B1c) |
 | Required-checks drift detector | `[ -f scripts/check-required-checks.sh ] && [ -x scripts/check-required-checks.sh ]` | Script exists and is executable |
 | Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
@@ -1512,6 +1540,7 @@ Configure repo settings via API BEFORE deploying workflows. Without this, `allow
 ```bash
 OWNER="owner"
 REPO="repo"
+SHIPPING_MODE=0  # 1 for a Cursor Cloud Shipping repo; the detection below also forces 1 — see "Shipping Mode"
 # Resolve the default branch up front — the branch-protection calls below build
 # paths from it (repos/.../branches/$DEFAULT_BRANCH/protection). Fail closed on a
 # failed or empty lookup so the script can't apply repo settings and THEN 404 on an
@@ -1528,6 +1557,24 @@ case "$DEFAULT_BRANCH" in
     echo "ERROR: default branch '$DEFAULT_BRANCH' is empty or needs URL-encoding for the API paths below — handle manually" >&2
     exit 1 ;;
 esac
+
+# ── Shipping opt-in detection (see "Shipping Mode") ──
+# A verify-* skill on the default branch forces Shipping mode. Fail closed: only
+# a 404 means "no .cursor/skills" — any other error stops before anything changes.
+DETECT_STDERR=$(mktemp)
+if VERIFY=$(gh api "repos/$OWNER/$REPO/contents/.cursor/skills?ref=$DEFAULT_BRANCH" \
+      --jq '[.[] | select(.type=="dir" and (.name|startswith("verify-"))) | .name] | join(",")' 2>"$DETECT_STDERR"); then
+  if [ -n "$VERIFY" ]; then
+    SHIPPING_MODE=1
+    echo "Shipping opt-in detected ($VERIFY) — SHIPPING_MODE=1"
+  fi
+elif ! grep -q 'HTTP 404' "$DETECT_STDERR"; then
+  echo "ERROR: cannot read .cursor/skills on $DEFAULT_BRANCH:" >&2
+  cat "$DETECT_STDERR" >&2
+  rm -f "$DETECT_STDERR"
+  exit 1
+fi
+rm -f "$DETECT_STDERR"
 
 # ── Repo settings (merge, auto-merge, branch cleanup) ──
 gh api "repos/$OWNER/$REPO" -X PATCH \
@@ -1558,7 +1605,37 @@ gh api "repos/$OWNER/$REPO/actions/permissions" -X PUT \
 # be the exact string `true` to enable approve+auto-merge.
 PUT_STDERR=$(mktemp)
 trap 'rm -f "$PUT_STDERR"' EXIT
-if gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
+if [ "$SHIPPING_MODE" = 1 ]; then
+  # Shipping mode: no workflow may approve PRs, and the auto-merge opt-in must
+  # be gone — anything that merges on its own skips Shipping's verification.
+  gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT --input - >/dev/null <<'EOF' \
+    || { echo "ERROR: could not set workflow permissions (Shipping mode)" >&2; exit 1; }
+{
+  "default_workflow_permissions": "read",
+  "can_approve_pull_request_reviews": false
+}
+EOF
+  DEL_STDERR=$(mktemp)
+  if ! gh variable delete DEPENDABOT_AUTO_APPROVE --repo "$OWNER/$REPO" 2>"$DEL_STDERR" \
+     && ! grep -qE "404|Not Found|not found" "$DEL_STDERR"; then
+    echo "ERROR: failed to clear DEPENDABOT_AUTO_APPROVE (Shipping mode):" >&2
+    cat "$DEL_STDERR" >&2
+    rm -f "$DEL_STDERR"
+    exit 1
+  fi
+  rm -f "$DEL_STDERR"
+  # Removing the workflow does not cancel auto-merge already queued on an open
+  # PR; such a PR would still merge on green checks without Shipping verification.
+  # shortcut: first 200 open PRs only; page through if a repo ever has more.
+  AUTO_PRS=$(gh pr list --repo "$OWNER/$REPO" --state open --limit 200 \
+      --json number,autoMergeRequest --jq '.[] | select(.autoMergeRequest != null) | .number') \
+    || { echo "ERROR: cannot list open PRs to cancel queued auto-merge" >&2; exit 1; }
+  for n in $AUTO_PRS; do
+    gh pr merge "$n" --repo "$OWNER/$REPO" --disable-auto \
+      || { echo "ERROR: could not cancel auto-merge on #$n" >&2; exit 1; }
+  done
+  echo "Dependabot auto-merge: OFF (Shipping mode — do not deploy dependabot-auto-merge.yml)"
+elif gh api "repos/$OWNER/$REPO/actions/permissions/workflow" -X PUT \
      --input - >/dev/null 2>"$PUT_STDERR" <<'EOF'
 {
   "default_workflow_permissions": "read",
@@ -1598,6 +1675,7 @@ else
 fi
 
 # Allowlist: github-owned always + specific third-party patterns
+# (Shipping mode: leave out hmarr/auto-approve-action@* — nothing there may approve PRs)
 gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
   --input - <<'EOF'
 {
@@ -1714,11 +1792,33 @@ if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
   fi
 fi
 
-jq -n --argjson ctx "$CONTEXTS" \
-  '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
-  | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
+if [ "$SHIPPING_MODE" = 1 ]; then
+  # Shipping preconditions — report and stop. Never flip visibility or drop a
+  # required check here; those are the operator's calls.
+  [ "$(gh api "repos/$OWNER/$REPO" --jq '.private')" = true ] || {
+    echo "error: Shipping mode needs a private repo (or visibility could not be read) — fix it yourself, then re-run" >&2
+    exit 1
+  }
+  if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
+    NON_ACTIONS=$(jq '[.required[] | select(.source_app != "github-actions")] | length' \
+      "$REPO_ROOT/.github/required-checks.lock") || { echo "error: cannot parse required-checks.lock" >&2; exit 1; }
+    [ "$NON_ACTIONS" = 0 ] || {
+      echo "error: Shipping mode needs every required check reported by GitHub Actions — $NON_ACTIONS lock entries are not; move them to .advisory or drop them" >&2
+      exit 1
+    }
+  fi
+  # enforce_admins on, and every check pinned to GitHub Actions (app_id 15368).
+  jq -n --argjson ctx "$CONTEXTS" \
+    '{required_status_checks:{strict:true,checks:($ctx | map({context:., app_id:15368}))},enforce_admins:true,required_pull_request_reviews:null,restrictions:null}' \
+    | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
+else
+  jq -n --argjson ctx "$CONTEXTS" \
+    '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
+    | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
+fi
 
 # ── Verify ──
+# Shipping mode: also run the Verify block in the "Shipping Mode" section.
 gh api "repos/$OWNER/$REPO" --jq '{allow_merge_commit, allow_squash_merge, allow_rebase_merge, allow_update_branch, delete_branch_on_merge, allow_auto_merge}'
 gh api "repos/$OWNER/$REPO/actions/permissions" --jq '{allowed_actions, sha_pinning_required}'
 gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" --jq '{strict, contexts}'
@@ -2557,7 +2657,7 @@ Dependabot provides three layers, all now deployed:
 
 1. **Security alerts** — flags vulnerable dependencies in the Security tab (GitHub-native, always on)
 2. **Version updates** — weekly PRs for outdated deps via `.github/dependabot.yml` (deployed across all helmet-onboarded repos)
-3. **Auto-merge for safe bumps (per-repo opt-in via `vars.DEPENDABOT_AUTO_APPROVE`)** — `.github/workflows/dependabot-auto-merge.yml` runs on every Dependabot PR. On opted-in repos (`vars.DEPENDABOT_AUTO_APPROVE = "true"` AND `can_approve_pull_request_reviews: true` on workflow permissions) it approves and enqueues auto-merge for safe bumps: patch (any) + minor (dev / indirect / github_actions). On opted-out repos (var unset, or enterprise policy blocks GitHub Actions from approving PRs) it runs in **annotate-only mode**: a comment fires for every safe bump explaining manual merge is required, and the existing manual-review comment fires for major / production-direct minor. Major + production-direct minor bumps are NEVER auto-merged on any tier — they always require human eyes
+3. **Auto-merge for safe bumps (per-repo opt-in via `vars.DEPENDABOT_AUTO_APPROVE`)** — `.github/workflows/dependabot-auto-merge.yml` runs on every Dependabot PR. On opted-in repos (`vars.DEPENDABOT_AUTO_APPROVE = "true"` AND `can_approve_pull_request_reviews: true` on workflow permissions) it approves and enqueues auto-merge for safe bumps: patch (any) + minor (dev / indirect / github_actions). On opted-out repos (var unset, or enterprise policy blocks GitHub Actions from approving PRs) it runs in **annotate-only mode**: a comment fires for every safe bump explaining manual merge is required, and the existing manual-review comment fires for major / production-direct minor. Major + production-direct minor bumps are NEVER auto-merged on any tier — they always require human eyes. **Shipping mode: skip this layer entirely** — do not deploy `dependabot-auto-merge.yml`, and remove it if present (see "Shipping Mode")
 
 **Deployed config** (`.github/dependabot.yml`):
 
@@ -4025,6 +4125,10 @@ Pure branch-protection update — no code change, no PR. Use when an existing
 repo deployed helmet's `security.yml` but the scanners aren't required-checks.
 Idempotent: re-adds existing required checks unchanged.
 
+**Shipping-mode repos:** the PATCH below preserves `enforce_admins`, but sends
+`contexts`, which lets GitHub pick each check's app. Run the "Shipping Mode"
+Verify block afterwards; if `all_actions` is false, re-apply B1b in Shipping mode.
+
 **Requires `bash`** (uses arrays — scanner names contain spaces, so POSIX
 word-splitting won't work). macOS ships bash 3.2+, sufficient.
 
@@ -4263,6 +4367,7 @@ done
 - **`reports` summary job in security.yml** — `if: always()` with `needs:` on all scanners; writes markdown table to `$GITHUB_STEP_SUMMARY` for PR-visible results
 - **Security scanners as required checks (added 2026-05-07)** — helmet's default branch-protection policy now requires `Actions security` (zizmor), `Code security` (semgrep), `Dependency CVEs` (trivy), and `IaC misconfig` (checkov). Previously they ran on PRs as advisory. The shift addresses two real bypass risks: (1) Dependabot bumps of vulnerable npm/pip deps could merge on `test` pass alone — Trivy flagged the CVE on the PR but didn't block merge. (2) Manual click of "Enable auto-merge" on a Dependabot PR with a failing scanner would silently merge once required checks (only `test`) passed. Helmet's job-level `if:` skip pattern in `security.yml` means scanners always report a result (pass or skip-counted-as-pass) on every PR, so requiring them does not introduce false-positive blockage on PRs that don't touch security-relevant files. The retrofit (B4b) is idempotent on `/required_status_checks` (PATCH not PUT) so re-running is safe. External AI reviewers (CodeRabbit, Greptile, cubic, CodeScene) stay advisory — their availability is third-party and required-check on them would hang PRs when the service is slow
 - **Dependabot `commit-message.prefix` and `labels`** — `chore(actions)` prefix for conventional commits; `dependencies` + `github-actions` labels for filtering. Dependabot reads `@<sha> # vX.Y.Z` inline comments and updates both SHA + comment
+- **Shipping mode for Cursor Cloud Shipping repos (added 2026-10-15)** — the opt-in signal is busdriver pr-grind's own (`.cursor/skills/verify-*/` on the default branch), and detection overrides the user's wording, so a routine helmet re-run cannot reinstall the auto-merge workflow or turn `enforce_admins` back off. Precondition failures (public repo, non-Actions required check) are reported, never auto-fixed. The verify skill stays manual — it encodes product knowledge
 - **Dependabot auto-merge is per-repo opt-in via `vars.DEPENDABOT_AUTO_APPROVE` (refined 2026-05-08)** — Dependabot's PR body already contains release notes + compatibility score; for patch and minor bumps, an LLM review adds little signal. The `dependabot-auto-merge.yml` workflow uses `dependabot/fetch-metadata` to gate by `update-type` and only approves + auto-merges patch/safe-minor bumps on repos that opt in (set `vars.DEPENDABOT_AUTO_APPROVE = "true"`). On opted-out repos (typical for enterprise orgs that disable GitHub Actions PR approval at the enterprise level) the workflow runs in annotate-only mode — comment fires for both safe-and-manual ("merge by hand") and unsafe ("major / production-direct minor") cases, but no failed approve step. Workflow uses `pull_request` (not `pull_request_target`) with explicit `permissions:` to override Dependabot's default read-only `GITHUB_TOKEN` — preserves helmet's "never `pull_request_target`" rule. `gh pr merge --auto` only enqueues; the actual merge waits for branch-protection checks, so no PAT is needed. **Earlier 2026-05-08 design assumed `bypass_pull_request_allowances.apps:["dependabot"]` could be a fallback for enterprise-restricted repos — empirically this does NOT work because GitHub auto-merge evaluates branch protection from the perspective of the actor that *enabled* auto-merge (`github-actions[bot]` from the workflow), not the PR author. The bypass list contains `dependabot`, never matches, and PRs sit BLOCKED indefinitely. Confirmed on Dive-And-Dev/perch#38. The `vars.DEPENDABOT_AUTO_APPROVE` opt-out is the honest replacement for that gap**
 - **Idempotency on Dependabot re-runs (added 2026-05-07, post-Greptile fix)** — Dependabot rebases re-trigger the workflow on the same PR. Two paths in helmet-managed code need explicit idempotency guards: (1) `gh pr merge --auto --squash` exits non-zero with "auto merge is already enabled" once auto-merge has been enabled by a prior run — needs stderr capture and substring pattern-match: tolerate the specific idempotency string only, surface every other failure (auth, rate limit, branch protection misconfig). A naive `|| echo` mask would silently swallow real errors. (2) `gh pr comment` always creates a new comment, so the comment step needs a grep-based check against existing `github-actions[bot]` comments to avoid duplicate notifications. The comment step uses two distinct hidden markers — `<!-- dependabot-auto-merge: annotate-only -->` (safe bump on opted-out repo) and `<!-- dependabot-auto-merge: manual-review-required -->` (unsafe bump on any tier) — so dedup is correctly scoped per case. The approve step (`hmarr/auto-approve-action`) handles its own idempotency natively — the action checks for an existing approving review from the same actor on the current head SHA and skips if one exists, so no in-workflow guard needed. The original PR (#23) shipped without any of these idempotency guards — pr-grind declared clean based on Greptile's check-pass status without reading the actual review body, which contained P1 findings. The lesson is process-level: **pr-grind must read AI-reviewer comment bodies, not just check-status flips**. Greptile posts as issue comments (not inline review threads), so a `reviewThreads` GraphQL filter misses everything; use `gh pr view --comments` plus `gh api repos/.../pulls/N/reviews` to get full coverage
 - **No OIDC needed yet (no CI-based deployment)** — all deployments use git-push → platform auto-deploy (Vercel/Netlify), so CI never touches deployment credentials. Existing `id-token: write` is only for Scorecard (OpenSSF API) and Cosign (keyless signing in forge). When CI-based deployment is added, switch to OIDC with trust policy locked to specific repo + environment (no wildcards). Never use static cloud credentials (AWS keys, GCP service accounts) as GitHub secrets for deployment

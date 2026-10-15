@@ -18,4 +18,9 @@ Analyze the user's request to determine which phase(s) to run:
 - If the user says "onboard" or "setup" without specifics: run all four phases in order (A → B → C → D)
   - **Phase D auto-runs** after Phase C if the `codegraph` CLI is on PATH and the repo contains a codegraph-supported language (Phase D's D0 check runs its own detection — does not require Phase A to have run in the same invocation); if codegraph is missing, Phase D prints an install hint and skips cleanly (Phases A/B/C are unaffected)
 
+If Phase B will run, settle the **pipeline mode** before it touches anything (see the skill's "Shipping Mode" section):
+- **Shipping mode** if the user said so (e.g. "onboard with shipping"), OR the default branch already carries `.cursor/skills/verify-*/`. Detection wins even when the user didn't mention it; to leave Shipping mode, the verify skill has to come off the default branch first.
+- Otherwise ask once: "Will this repo land PRs through Cursor Cloud Shipping?" — no means **standard mode**.
+- State the chosen mode in the first progress message.
+
 Follow the skill instructions precisely, executing each step in sequence.
