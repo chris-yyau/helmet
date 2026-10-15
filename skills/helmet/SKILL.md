@@ -1879,7 +1879,7 @@ if [ "$SHIPPING_MODE" = 1 ]; then
   }
   # enforce_admins on, and every check pinned to GitHub Actions (app_id 15368).
   jq -n --argjson ctx "$CONTEXTS" \
-    '{required_status_checks:{strict:true,checks:($ctx | map({context:., app_id:15368}))},enforce_admins:true,required_pull_request_reviews:null,restrictions:null}' \
+    '{required_status_checks:{strict:true,contexts:[],checks:($ctx | map({context:., app_id:15368}))},enforce_admins:true,required_pull_request_reviews:null,restrictions:null}' \
     | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input - \
     || { echo "error: Shipping branch protection PUT failed — enforce_admins/app_id not applied" >&2; exit 1; }
 else
