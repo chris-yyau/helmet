@@ -1391,7 +1391,8 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" --jq '{
   enforce_admins: .enforce_admins.enabled, strict: .required_status_checks.strict,
   all_actions: ((.required_status_checks.checks // []) | length > 0 and all(.app_id == 15368))}'
 gh api "repos/$OWNER/$REPO" --jq '{private, auto_merge_off: (.allow_auto_merge == false)}'
-# All five must be true.
+gh api "repos/$OWNER/$REPO/actions/permissions/workflow" --jq '{no_workflow_approval: (.can_approve_pull_request_reviews == false)}'
+# All six must be true.
 ```
 
 **Manual step — the verify skill.** Shipping needs a repo-specific `.cursor/skills/verify-<name>/SKILL.md` telling the cloud agent how to verify a PR (build, test, what to check by hand). Helmet does not generate it — it is product knowledge. Use `Dive-And-Dev/jikdak`'s `.cursor/skills/verify-jikdak/` as the template and land it in its own PR; until it is on the default branch, the repo is not opted in.
@@ -1432,6 +1433,7 @@ gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_c
 | SHA pin script | `[ -f .github/scripts/check-pinned-uses.sh ]` | File exists |
 | Dependabot | `[ -f .github/dependabot.yml ]` | File exists |
 | Dependabot auto-merge | `[ -f .github/workflows/dependabot-auto-merge.yml ]` | File exists (N/A if no Dependabot config). **Shipping mode: inverted** — the file must be ABSENT |
+| Shipping invariants | Shipping mode only: the Verify block in "Shipping Mode" | All six values `true` (N/A for standard-mode repos) |
 | Required-checks lock | `[ -f .github/required-checks.lock ]` | File exists (canonical name + source-app registry — see B1c) |
 | Required-checks drift detector | `[ -f scripts/check-required-checks.sh ] && [ -x scripts/check-required-checks.sh ]` | Script exists and is executable |
 | Scanners required | `gh api repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks --jq '.contexts as $c | (["Actions security","Code security","Dependency CVEs","IaC misconfig"] - $c | length == 0)'` | Returns `true` iff all four of `Actions security`, `Code security`, `Dependency CVEs`, `IaC misconfig` are required (run B4b retrofit if not). Set-difference: empty result means every required scanner is present in `.contexts`. (GFM treats pipes inside backticks as code, not column delimiters — no escape needed) |
