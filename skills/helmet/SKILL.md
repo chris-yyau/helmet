@@ -1626,10 +1626,13 @@ EOF
   rm -f "$DEL_STDERR"
   # Removing the workflow does not cancel auto-merge already queued on an open
   # PR; such a PR would still merge on green checks without Shipping verification.
-  # shortcut: first 200 open PRs only; page through if a repo ever has more.
-  AUTO_PRS=$(gh pr list --repo "$OWNER/$REPO" --state open --limit 200 \
-      --json number,autoMergeRequest --jq '.[] | select(.autoMergeRequest != null) | .number') \
+  # Fail closed at the list limit: an unseen PR may still have auto-merge queued.
+  OPEN_PRS=$(gh pr list --repo "$OWNER/$REPO" --state open --limit 1000 \
+      --json number,autoMergeRequest) \
     || { echo "ERROR: cannot list open PRs to cancel queued auto-merge" >&2; exit 1; }
+  [ "$(jq 'length' <<<"$OPEN_PRS")" -lt 1000 ] \
+    || { echo "ERROR: 1000+ open PRs — cancel queued auto-merge by hand, then re-run" >&2; exit 1; }
+  AUTO_PRS=$(jq -r '.[] | select(.autoMergeRequest != null) | .number' <<<"$OPEN_PRS")
   for n in $AUTO_PRS; do
     gh pr merge "$n" --repo "$OWNER/$REPO" --disable-auto \
       || { echo "ERROR: could not cancel auto-merge on #$n" >&2; exit 1; }
