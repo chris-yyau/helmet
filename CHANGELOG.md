@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/chris-yyau/helmet/compare/v1.26.1...v1.27.0) (2026-10-15)
+
+
+### Features
+
+* **helmet:** add Shipping mode for Cursor Cloud Shipping repos ([#95](https://github.com/chris-yyau/helmet/issues/95)) ([ac19f89](https://github.com/chris-yyau/helmet/commit/ac19f898472368afa668e5aa8c087ea6b47a878d))
+
 ## [1.26.1](https://github.com/chris-yyau/helmet/compare/v1.26.0...v1.26.1) (2026-07-18)
 
 
