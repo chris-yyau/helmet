@@ -1626,18 +1626,22 @@ if [ "$SHIPPING_MODE" = 1 ]; then
   if [[ -f "$LOCK" ]]; then
     LOCKED=$(jq -r '.required[].name' "$LOCK") || { echo "error: cannot parse required-checks.lock" >&2; exit 1; }
   fi
-  # Capture first, sort second: in a pipe, sort's status would hide a gh failure.
-  REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/${CHECK_SHA:-$(git rev-parse HEAD)}/check-runs" \
-      --jq '.check_runs[] | select(.app.id == 15368) | .name') \
-    || { echo "error: cannot read check-runs to confirm reporters" >&2; exit 1; }
-  REPORTED=$(LC_ALL=C sort -u <<<"$REPORTED")
-  MISSING=$(printf '%s\n%s\n' "$LOCKED" "$LIVE" | sed '/^$/d' | LC_ALL=C sort -u \
-    | LC_ALL=C comm -23 - <(printf '%s\n' "$REPORTED"))
-  [ -z "$MISSING" ] || {
-    echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these required checks on ${CHECK_SHA:-HEAD}:" >&2
-    printf '%s\n' "$MISSING" >&2
-    exit 1
-  }
+  # Nothing required yet (fresh repo, no lock): no reporters to confirm, and HEAD
+  # may not exist on GitHub. The late check below still covers the final list.
+  if [ -n "$LOCKED$LIVE" ]; then
+    # Capture first, sort second: in a pipe, sort's status would hide a gh failure.
+    REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/${CHECK_SHA:-$(git rev-parse HEAD)}/check-runs" \
+        --jq '.check_runs[] | select(.app.id == 15368) | .name') \
+      || { echo "error: cannot read check-runs to confirm reporters" >&2; exit 1; }
+    REPORTED=$(LC_ALL=C sort -u <<<"$REPORTED")
+    MISSING=$(printf '%s\n%s\n' "$LOCKED" "$LIVE" | sed '/^$/d' | LC_ALL=C sort -u \
+      | LC_ALL=C comm -23 - <(printf '%s\n' "$REPORTED"))
+    [ -z "$MISSING" ] || {
+      echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these required checks on ${CHECK_SHA:-HEAD}:" >&2
+      printf '%s\n' "$MISSING" >&2
+      exit 1
+    }
+  fi
 fi
 
 # ── Repo settings (merge, auto-merge, branch cleanup) ──
