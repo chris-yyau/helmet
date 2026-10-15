@@ -1877,7 +1877,8 @@ if [ "$SHIPPING_MODE" = 1 ]; then
   # enforce_admins on, and every check pinned to GitHub Actions (app_id 15368).
   jq -n --argjson ctx "$CONTEXTS" \
     '{required_status_checks:{strict:true,checks:($ctx | map({context:., app_id:15368}))},enforce_admins:true,required_pull_request_reviews:null,restrictions:null}' \
-    | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input -
+    | gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" -X PUT --input - \
+    || { echo "error: Shipping branch protection PUT failed — enforce_admins/app_id not applied" >&2; exit 1; }
 else
   jq -n --argjson ctx "$CONTEXTS" \
     '{required_status_checks:{strict:true,contexts:$ctx},enforce_admins:false,required_pull_request_reviews:null,restrictions:null}' \
@@ -4318,6 +4319,17 @@ for dir in "$PROJECTS_DIR"/*/; do
   [ -f "$dir/SECURITY.md" ] && security_md="✅"
   [ -f "$dir/.github/dependabot.yml" ] && dependabot="✅"
   [ -f "$dir/.github/workflows/dependabot-auto-merge.yml" ] && dep_automerge="✅"
+  # Shipping repos (a verify-* skill on the default branch, detected as B1b does)
+  # invert this: the workflow must be ABSENT. "?" when that cannot be determined.
+  ship_remote=$(git -C "$dir" remote get-url origin 2>/dev/null | sed 's|https://github.com/||;s|\.git$||')
+  if ship_skills=$(gh api "repos/$ship_remote/contents/.cursor/skills" \
+        --jq '[.[] | select(.type=="dir" and (.name|startswith("verify-")))] | length' 2>&1); then
+    if [ "$ship_skills" != 0 ]; then
+      dep_automerge="✅"; [ -f "$dir/.github/workflows/dependabot-auto-merge.yml" ] && dep_automerge="❌"
+    fi
+  elif ! { grep -q 'HTTP 404' <<<"$ship_skills" && gh api "repos/$ship_remote/contents" --silent 2>/dev/null; }; then
+    dep_automerge="?"  # 404 counts as "not Shipping" only when repo contents are readable
+  fi
   # Check whether all 4 scanners are in required-status-checks (best effort —
   # remote API call; skip silently if no remote or no protection).
   if remote_full=$(git -C "$dir" remote get-url origin 2>/dev/null | sed 's|https://github.com/||;s|\.git$||') \
