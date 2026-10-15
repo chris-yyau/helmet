@@ -1378,7 +1378,7 @@ A repo that lands PRs through Cursor Cloud Shipping needs a stricter Phase B tha
 
 | Area | Standard mode | Shipping mode |
 |------|---------------|---------------|
-| Dependabot auto-merge (B1b workflow permissions, component L) | Deploy `dependabot-auto-merge.yml`; probe approval, set `DEPENDABOT_AUTO_APPROVE` | Do **not** deploy it (remove it if present). Set `can_approve_pull_request_reviews: false`, delete `DEPENDABOT_AUTO_APPROVE`, cancel auto-merge queued on open PRs. `dependabot.yml` stays — its PRs land like any other |
+| Dependabot auto-merge (B1b workflow permissions, component L) | Deploy `dependabot-auto-merge.yml`; probe approval, set `DEPENDABOT_AUTO_APPROVE` | Do **not** deploy it (remove it if present). Set `allow_auto_merge: false` and `can_approve_pull_request_reviews: false`, delete `DEPENDABOT_AUTO_APPROVE`, cancel auto-merge queued on open PRs. `dependabot.yml` stays — its PRs land like any other |
 | Branch protection (B1b) | `enforce_admins: false`, `contexts` | `enforce_admins: true`, `strict: true`, `checks` pinned to `app_id` 15368 |
 | Preconditions | — | Repo is private, and every `.required` entry in `.github/required-checks.lock` has `source_app: github-actions`. Helmet **reports** a violation and stops; it never flips visibility or drops a check on its own |
 | Admin Bypass Audit | Deploy | Optional — with `enforce_admins: true` an admin cannot bypass (see P) |
@@ -1390,8 +1390,8 @@ A repo that lands PRs through Cursor Cloud Shipping needs a stricter Phase B tha
 gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection" --jq '{
   enforce_admins: .enforce_admins.enabled, strict: .required_status_checks.strict,
   all_actions: ((.required_status_checks.checks // []) | length > 0 and all(.app_id == 15368))}'
-gh api "repos/$OWNER/$REPO" --jq '{private}'
-# All four must be true.
+gh api "repos/$OWNER/$REPO" --jq '{private, auto_merge_off: (.allow_auto_merge == false)}'
+# All five must be true.
 ```
 
 **Manual step — the verify skill.** Shipping needs a repo-specific `.cursor/skills/verify-<name>/SKILL.md` telling the cloud agent how to verify a PR (build, test, what to check by hand). Helmet does not generate it — it is product knowledge. Use `Dive-And-Dev/jikdak`'s `.cursor/skills/verify-jikdak/` as the template and land it in its own PR; until it is on the default branch, the repo is not opted in.
@@ -1540,7 +1540,13 @@ Configure repo settings via API BEFORE deploying workflows. Without this, `allow
 ```bash
 OWNER="owner"
 REPO="repo"
-SHIPPING_MODE=0  # 1 for a Cursor Cloud Shipping repo; the detection below also forces 1 — see "Shipping Mode"
+# The mode settled before Phase B: 1 = Shipping (user asked for it), 0 = standard.
+# Detection below can only raise it to 1 — see "Shipping Mode".
+SHIPPING_MODE="<0 or 1>"
+case "$SHIPPING_MODE" in
+  0|1) ;;
+  *) echo "ERROR: set SHIPPING_MODE to the mode settled before Phase B (0 or 1)" >&2; exit 1 ;;
+esac
 # Resolve the default branch up front — the branch-protection calls below build
 # paths from it (repos/.../branches/$DEFAULT_BRANCH/protection). Fail closed on a
 # failed or empty lookup so the script can't apply repo settings and THEN 404 on an
@@ -1568,13 +1574,36 @@ if VERIFY=$(gh api "repos/$OWNER/$REPO/contents/.cursor/skills?ref=$DEFAULT_BRAN
     SHIPPING_MODE=1
     echo "Shipping opt-in detected ($VERIFY) — SHIPPING_MODE=1"
   fi
-elif ! grep -q 'HTTP 404' "$DETECT_STDERR"; then
+elif ! grep -q 'HTTP 404' "$DETECT_STDERR" \
+     || ! gh api "repos/$OWNER/$REPO/contents?ref=$DEFAULT_BRANCH" --silent 2>>"$DETECT_STDERR"; then
+  # A 404 only means "absent" if the token can read contents at all — GitHub
+  # also answers 404 for a private repo the token cannot read.
   echo "ERROR: cannot read .cursor/skills on $DEFAULT_BRANCH:" >&2
   cat "$DETECT_STDERR" >&2
   rm -f "$DETECT_STDERR"
   exit 1
 fi
 rm -f "$DETECT_STDERR"
+
+# ── Shipping preconditions — before any repo mutation below ──
+# Report and stop. Never flip visibility or drop a required check here; those
+# are the operator's calls.
+if [ "$SHIPPING_MODE" = 1 ]; then
+  [ "$(gh api "repos/$OWNER/$REPO" --jq '.private')" = true ] || {
+    echo "error: Shipping mode needs a private repo (or visibility could not be read) — fix it yourself, then re-run" >&2
+    exit 1
+  }
+  LOCK="$(git rev-parse --show-toplevel)/.github/required-checks.lock" || {
+    echo "error: cannot resolve repo root to read required-checks.lock" >&2; exit 1; }
+  if [[ -f "$LOCK" ]]; then
+    NON_ACTIONS=$(jq '[.required[] | select(.source_app != "github-actions")] | length' "$LOCK") \
+      || { echo "error: cannot parse required-checks.lock" >&2; exit 1; }
+    [ "$NON_ACTIONS" = 0 ] || {
+      echo "error: Shipping mode needs every required check reported by GitHub Actions — $NON_ACTIONS lock entries are not; move them to .advisory or drop them" >&2
+      exit 1
+    }
+  fi
+fi
 
 # ── Repo settings (merge, auto-merge, branch cleanup) ──
 gh api "repos/$OWNER/$REPO" -X PATCH \
@@ -1583,7 +1612,7 @@ gh api "repos/$OWNER/$REPO" -X PATCH \
   -F allow_rebase_merge=false \
   -F allow_update_branch=true \
   -F delete_branch_on_merge=true \
-  -F allow_auto_merge=true \
+  -F allow_auto_merge="$([ "$SHIPPING_MODE" = 1 ] && printf false || printf true)" \
   --silent
 
 # ── Actions permissions ──
@@ -1796,20 +1825,20 @@ if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
 fi
 
 if [ "$SHIPPING_MODE" = 1 ]; then
-  # Shipping preconditions — report and stop. Never flip visibility or drop a
-  # required check here; those are the operator's calls.
-  [ "$(gh api "repos/$OWNER/$REPO" --jq '.private')" = true ] || {
-    echo "error: Shipping mode needs a private repo (or visibility could not be read) — fix it yourself, then re-run" >&2
+  # Before pinning, confirm GitHub Actions actually reports every check on the
+  # Step 1 commit — the lock's declared source_app is not proof, and a check
+  # pinned to the wrong app would leave every PR pending.
+  # Capture first, sort second: in a pipe, sort's status would hide a gh failure.
+  REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/$(git rev-parse HEAD)/check-runs" \
+      --jq '.check_runs[] | select(.app.id == 15368) | .name') \
+    || { echo "error: cannot read check-runs to confirm reporters" >&2; exit 1; }
+  REPORTED=$(LC_ALL=C sort -u <<<"$REPORTED")
+  MISSING=$(jq -r '.[]' <<<"$CONTEXTS" | LC_ALL=C sort -u | LC_ALL=C comm -23 - <(printf '%s\n' "$REPORTED"))
+  [ -z "$MISSING" ] || {
+    echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these on HEAD:" >&2
+    printf '%s\n' "$MISSING" >&2
     exit 1
   }
-  if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
-    NON_ACTIONS=$(jq '[.required[] | select(.source_app != "github-actions")] | length' \
-      "$REPO_ROOT/.github/required-checks.lock") || { echo "error: cannot parse required-checks.lock" >&2; exit 1; }
-    [ "$NON_ACTIONS" = 0 ] || {
-      echo "error: Shipping mode needs every required check reported by GitHub Actions — $NON_ACTIONS lock entries are not; move them to .advisory or drop them" >&2
-      exit 1
-    }
-  fi
   # enforce_admins on, and every check pinned to GitHub Actions (app_id 15368).
   jq -n --argjson ctx "$CONTEXTS" \
     '{required_status_checks:{strict:true,checks:($ctx | map({context:., app_id:15368}))},enforce_admins:true,required_pull_request_reviews:null,restrictions:null}' \
