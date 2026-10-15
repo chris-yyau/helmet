@@ -1585,6 +1585,11 @@ elif ! grep -q 'HTTP 404' "$DETECT_STDERR" \
 fi
 rm -f "$DETECT_STDERR"
 
+# Commit whose check-runs stand for "this repo's checks" (Step 1 discovery and the
+# Shipping reporter checks). Each use reads HEAD at that moment unless CHECK_SHA is
+# set. Jobs that run only on pull_request (commitlint, version-drift) never report
+# on a default-branch HEAD — set CHECK_SHA to a PR head for those.
+
 # ── Shipping preconditions — before any repo mutation below ──
 # Report and stop. Never flip visibility or drop a required check here; those
 # are the operator's calls.
@@ -1603,6 +1608,33 @@ if [ "$SHIPPING_MODE" = 1 ]; then
       exit 1
     }
   fi
+  # Shipping pins every required check to GitHub Actions. Check the names already
+  # required — the lock's AND the live protection's (the lock may be absent or
+  # stale) — against what GitHub Actions actually reported on CHECK_SHA.
+  PROT_STDERR=$(mktemp)
+  if ! LIVE=$(gh api "repos/$OWNER/$REPO/branches/$DEFAULT_BRANCH/protection/required_status_checks" \
+        --jq '((.contexts // []) + [(.checks // [])[].context]) | .[]' 2>"$PROT_STDERR"); then
+    grep -q 'HTTP 404' "$PROT_STDERR" \
+      || { echo "error: cannot read live required checks:" >&2; cat "$PROT_STDERR" >&2; rm -f "$PROT_STDERR"; exit 1; }
+    LIVE=""  # 404: no protection yet
+  fi
+  rm -f "$PROT_STDERR"
+  LOCKED=""
+  if [[ -f "$LOCK" ]]; then
+    LOCKED=$(jq -r '.required[].name' "$LOCK") || { echo "error: cannot parse required-checks.lock" >&2; exit 1; }
+  fi
+  # Capture first, sort second: in a pipe, sort's status would hide a gh failure.
+  REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/${CHECK_SHA:-$(git rev-parse HEAD)}/check-runs" \
+      --jq '.check_runs[] | select(.app.id == 15368) | .name') \
+    || { echo "error: cannot read check-runs to confirm reporters" >&2; exit 1; }
+  REPORTED=$(LC_ALL=C sort -u <<<"$REPORTED")
+  MISSING=$(printf '%s\n%s\n' "$LOCKED" "$LIVE" | sed '/^$/d' | LC_ALL=C sort -u \
+    | LC_ALL=C comm -23 - <(printf '%s\n' "$REPORTED"))
+  [ -z "$MISSING" ] || {
+    echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these required checks on ${CHECK_SHA:-HEAD}:" >&2
+    printf '%s\n' "$MISSING" >&2
+    exit 1
+  }
 fi
 
 # ── Repo settings (merge, auto-merge, branch cleanup) ──
@@ -1731,7 +1763,7 @@ EOF
 
 # Step 1: Discover actual check names from a recent workflow run.
 # GitHub uses the `name:` field as the check name; falls back to the job key if no name is set.
-ALL_CHECKS=$(gh api "repos/$OWNER/$REPO/commits/$(git rev-parse HEAD)/check-runs" \
+ALL_CHECKS=$(gh api "repos/$OWNER/$REPO/commits/${CHECK_SHA:-$(git rev-parse HEAD)}/check-runs" \
   --jq '.check_runs[].name' | sort -u)
 echo "Discovered checks:"
 echo "$ALL_CHECKS"
@@ -1825,17 +1857,17 @@ if [[ -f "$REPO_ROOT/.github/required-checks.lock" ]]; then
 fi
 
 if [ "$SHIPPING_MODE" = 1 ]; then
-  # Before pinning, confirm GitHub Actions actually reports every check on the
-  # Step 1 commit — the lock's declared source_app is not proof, and a check
-  # pinned to the wrong app would leave every PR pending.
-  # Capture first, sort second: in a pipe, sort's status would hide a gh failure.
-  REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/$(git rev-parse HEAD)/check-runs" \
+  # The preconditions checked every name required before this run. This covers
+  # names Step 2 newly confirmed (e.g. first onboarding, no lock yet), so re-read
+  # the reporters now — workflows have run since the precondition snapshot. A stop
+  # here leaves only the Shipping-correct settings above applied; fix and re-run.
+  REPORTED=$(gh api --paginate "repos/$OWNER/$REPO/commits/${CHECK_SHA:-$(git rev-parse HEAD)}/check-runs" \
       --jq '.check_runs[] | select(.app.id == 15368) | .name') \
     || { echo "error: cannot read check-runs to confirm reporters" >&2; exit 1; }
   REPORTED=$(LC_ALL=C sort -u <<<"$REPORTED")
   MISSING=$(jq -r '.[]' <<<"$CONTEXTS" | LC_ALL=C sort -u | LC_ALL=C comm -23 - <(printf '%s\n' "$REPORTED"))
   [ -z "$MISSING" ] || {
-    echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these on HEAD:" >&2
+    echo "error: Shipping mode pins checks to GitHub Actions, but it did not report these on ${CHECK_SHA:-HEAD}:" >&2
     printf '%s\n' "$MISSING" >&2
     exit 1
   }
