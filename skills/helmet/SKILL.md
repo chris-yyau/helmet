@@ -1648,7 +1648,8 @@ gh api "repos/$OWNER/$REPO" -X PATCH \
   -F allow_update_branch=true \
   -F delete_branch_on_merge=true \
   -F allow_auto_merge="$([ "$SHIPPING_MODE" = 1 ] && printf false || printf true)" \
-  --silent
+  --silent \
+  || { echo "error: repo settings PATCH failed — stopping before anything else is configured" >&2; exit 1; }
 
 # ── Actions permissions ──
 # Set to "selected" — allows github-owned + specific third-party
@@ -1742,9 +1743,11 @@ else
 fi
 
 # Allowlist: github-owned always + specific third-party patterns
-# (Shipping mode: leave out hmarr/auto-approve-action@* — nothing there may approve PRs)
-gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT \
-  --input - <<'EOF'
+# (Shipping mode: hmarr/auto-approve-action@* is dropped — nothing there may approve PRs)
+jq --arg ship "$SHIPPING_MODE" \
+  'if $ship == "1" then .patterns_allowed -= ["hmarr/auto-approve-action@*"] else . end' <<'EOF' \
+  | gh api "repos/$OWNER/$REPO/actions/permissions/selected-actions" -X PUT --input - \
+  || { echo "error: selected-actions allowlist PUT failed" >&2; exit 1; }
 {
   "github_owned_allowed": true,
   "verified_creator_allowed": false,
@@ -4321,7 +4324,7 @@ for dir in "$PROJECTS_DIR"/*/; do
   [ -f "$dir/.github/workflows/dependabot-auto-merge.yml" ] && dep_automerge="✅"
   # Shipping repos (a verify-* skill on the default branch, detected as B1b does)
   # invert this: the workflow must be ABSENT. "?" when that cannot be determined.
-  ship_remote=$(git -C "$dir" remote get-url origin 2>/dev/null | sed 's|https://github.com/||;s|\.git$||')
+  ship_remote=$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^(https://github\.com/|ssh://git@github\.com/|git@github\.com:)##; s#\.git/?$##')
   if ship_skills=$(gh api "repos/$ship_remote/contents/.cursor/skills" \
         --jq '[.[] | select(.type=="dir" and (.name|startswith("verify-")))] | length' 2>&1); then
     if [ "$ship_skills" != 0 ]; then
