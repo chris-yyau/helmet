@@ -1,3 +1,10 @@
+## [1.27.1](https://github.com/chris-yyau/helmet/compare/v1.27.0...v1.27.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **helmet:** keep Actions app pins when B4b retrofits a Shipping repo ([#97](https://github.com/chris-yyau/helmet/issues/97)) ([8ae5217](https://github.com/chris-yyau/helmet/commit/8ae52170a2a75fea8f39d9a97dbf8b7e9b6e99b2)), closes [#96](https://github.com/chris-yyau/helmet/issues/96)
+
 # [1.27.0](https://github.com/chris-yyau/helmet/compare/v1.26.1...v1.27.0) (2026-10-15)
 
 
