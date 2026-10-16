@@ -4240,7 +4240,9 @@ for full in "${REPOS[@]}"; do
     echo "  ❌ no branch protection on $DEFAULT_BRANCH (set up via B1b first)"; continue
   fi
   STRICT_CUR=$(echo "$PROT_RAW" | jq -c '.strict')
-  CURRENT=$(echo "$PROT_RAW" | jq -c '.contexts // []')
+  # Union both fields: Shipping repos store app-pinned `checks`; GitHub
+  # mirrors their names into `contexts`, but don't depend on that.
+  CURRENT=$(echo "$PROT_RAW" | jq -c '((.contexts // []) + ((.checks // []) | map(.context))) | unique')
 
   # Shipping repos keep every required check pinned to GitHub Actions. The
   # contents API reads the default branch when no ref is given. A 404 on
@@ -4255,8 +4257,12 @@ for full in "${REPOS[@]}"; do
   fi
   # Only re-pin what B1b already pinned: an unpinned (null/-1) or foreign-app
   # check may not be reported by Actions, and B1b is what verifies reporters.
+  # No required checks at all passes (nothing to re-pin); a context with no
+  # matching pinned check does not.
   if [ "$SHIP" = 1 ] && ! echo "$PROT_RAW" | jq -e \
-       '(.checks // []) | length > 0 and all(.app_id == 15368)' >/dev/null; then
+       '(.strict | type == "boolean")
+        and ((.checks // []) | all(.app_id == 15368))
+        and (((.contexts // []) - ((.checks // []) | map(.context))) | length == 0)' >/dev/null; then
     echo "  ❌ Shipping repo has a required check not pinned to GitHub Actions — fix it via B1b"; continue
   fi
 
