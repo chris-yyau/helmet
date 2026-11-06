@@ -44,7 +44,7 @@
 #   6. Every push (main) run completes: when `on.push` is present, each `concurrency:`
 #      block (workflow- or job-level) has `cancel-in-progress` absent/false or exactly
 #      `github.event_name == 'pull_request'`, AND a group that exactly matches an allowlisted
-#      per-workflow+commit shape — `github.workflow` + `github.sha` (only when the triggers are
+#      per-workflow+commit shape — `github.workflow` + `pull_request.number || github.sha` (only when the triggers are
 #      pull_request/push alone and push is limited to one literal branch, no tags) or
 #      `github.run_id` (a ref-keyed group lets GitHub drop
 #      the PENDING run of a middle commit even with cancel off), and no job-level
@@ -565,7 +565,9 @@ else:
 # per run and needs neither. Accepted limit: two workflow files with the same `name:`
 # share `github.workflow` — this checker reads security.yml alone and cannot see that.
 _PFX = r"[A-Za-z0-9_.-]*"
-_SHA_SHAPE = re.compile(_PFX + r"\$\{\{ github\.workflow \}\}-\$\{\{ (github\.event\.pull_request\.number \|\| )?github\.sha \}\}")
+_SHA_SHAPE = re.compile(_PFX + r"\$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.sha \}\}")
+# The PR-number fallback is mandatory: without it a PR event (e.g. `closed` on merge) keys
+# on the merge sha and lands in the main push run's group.
 _RUN_SHAPE = re.compile(_PFX + r"(\$\{\{ github\.workflow \}\}-)?\$\{\{ github\.run_id \}\}")
 
 def sha_key_safe(triggers):
@@ -965,6 +967,8 @@ EOF
     perl -0pe 's/    branches: \[main\]\n//')"
   expect 1 "inv6 sha group, tag push" "$(with_conc "$SHA_GROUP" false | \
     perl -0pe "s/    branches: \[main\]\n/    branches: [main]\n    tags: ['v*']\n/")"
+  # inv6: sha without the PR-number fallback — a closed/merged PR event keys on main's sha ⇒ FAIL
+  expect 1 "inv6 sha without PR fallback" "$(with_conc "\${{ github.workflow }}-\${{ github.sha }}" "\${{ github.event_name == 'pull_request' }}")"
   # inv6: another trigger can run the same sha into the sha group ⇒ FAIL
   expect 1 "inv6 sha group, extra trigger" "$(with_conc "$SHA_GROUP" false | \
     perl -0pe 's/^on:\n/on:\n  workflow_dispatch:\n/m')"
