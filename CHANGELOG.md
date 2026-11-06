@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/chris-yyau/helmet/compare/v1.27.1...v1.28.0) (2026-11-06)
+
+
+### Features
+
+* **helmet:** add CI speed audit; never cancel main runs ([#98](https://github.com/chris-yyau/helmet/issues/98)) ([72f6251](https://github.com/chris-yyau/helmet/commit/72f625140e64c0a41e2006f85e27703f0817ddeb))
+
 ## [1.27.1](https://github.com/chris-yyau/helmet/compare/v1.27.0...v1.27.1) (2026-10-16)
 
 
