@@ -1457,7 +1457,7 @@ For each `.github/workflows/*.yml`, verify:
 | `timeout-minutes` on every job | For each workflow, verify every job has `timeout-minutes` set |
 | `permissions` declared | `grep -L 'permissions' .github/workflows/*.yml` — should return nothing |
 | `defaults.run.shell` | Check `defaults.run.shell: bash` is declared (not just any `shell:` key in step-level overrides). **EXCEPTION:** `scorecard.yml` must NOT declare top-level `defaults:` or `env:` — `ossf/scorecard-action` publish verification rejects workflows containing them with `workflow contains global env vars or defaults` (see https://github.com/ossf/scorecard-action#workflow-restrictions) |
-| Concurrency group | Every push/PR-triggered workflow must declare a `concurrency:` block (cron-only workflows like scorecard.yml are exempt). Cancellable workflows (cancel-in-progress: true) must use the canonical group: `${{ github.workflow }}-${{ github.event.pull_request.number \|\| github.ref }}` so two different workflows can't accidentally share a group. Non-cancellable workflows (release.yml, bypass-audit.yml) must use `cancel-in-progress: false` AND a commit/sha/ref-keyed group that won't collapse independent runs. Quick lint: `grep -L '^concurrency:' .github/workflows/*.yml` should return only cron-only files |
+| Concurrency group | Every push/PR-triggered workflow must declare a `concurrency:` block (cron-only workflows like scorecard.yml are exempt). Cancellable workflows must use the canonical group: `${{ github.workflow }}-${{ github.event.pull_request.number \|\| github.ref }}` so two different workflows can't accidentally share a group. A workflow triggered by both `push` to main and `pull_request` must use `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` with a `github.sha` push fallback (`...pull_request.number \|\| github.sha }}`) — a bare `true` cancels the previous main run when commits land back-to-back, and a `github.ref` fallback still lets GitHub drop the pending run of a middle commit. PR-only workflows and pinact-style idempotent push workflows may keep `github.ref` + `true`. Non-cancellable workflows (release.yml, bypass-audit.yml) must use `cancel-in-progress: false` AND a commit/sha/ref-keyed group that won't collapse independent runs. Quick lint: `grep -L '^concurrency:' .github/workflows/*.yml` should return only cron-only files |
 | Harden-Runner | For each ubuntu job (not macOS), verify `harden-runner` step exists. Check per-job, not per-file |
 | SHA-pinned actions | `bash .github/scripts/check-pinned-uses.sh` — exit 0 = pass |
 | No `paths` + `paths-ignore` on same trigger | Verify no workflow uses both `paths` and `paths-ignore` on the same trigger event (GitHub ignores `paths-ignore` when `paths` is present) |
@@ -1492,6 +1492,50 @@ grep -nB 0 -A 5 'upload-artifact' .github/workflows/*.yml | grep -E 'retention-d
 | Reports summary job | `grep -q 'GITHUB_STEP_SUMMARY' .github/workflows/security.yml` | Found |
 | Artifact retention set | `grep -q 'retention-days' .github/workflows/scorecard.yml` | Found where upload-artifact is used |
 
+### CI Speed Checks (measure first, then cut)
+
+Speed work never drops a required check or weakens a gate. Find where the time goes before changing anything — on small repos most of a job is runner setup, not the checks themselves.
+
+**1. Baseline.** Split every job of the last 50 runs into queue / prep / run:
+
+```bash
+# Per-job averages (seconds) over the last 50 completed runs of the current repo.
+# SINCE=<ISO timestamp> limits to runs created at or after it (use for the "after" pass).
+# queue = created → runner picked it up; prep = runner setup/teardown, harden-runner,
+# checkout, toolchain + dependency install steps; run = everything else (the actual checks).
+PREP='^(Set up job|Complete job|Pre |Post |Harden|Run actions/checkout|Run actions/setup-|Run dtolnay/|Run Swatinem/|Run taiki-e/)|[Ii]nstall'
+printf '%-48s\t%4s\t%6s\t%6s\t%6s\t%6s\n' workflow/job n queue prep run total
+gh run list -L 50 --status completed ${SINCE:+--created ">=$SINCE"} \
+  --json databaseId,workflowName --jq '.[] | "\(.databaseId)\t\(.workflowName)"' |
+while IFS=$'\t' read -r id wf; do
+  gh api --paginate "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=100" | jq -r --arg re "$PREP" --arg wf "$wf" '
+    .jobs[] | select(.conclusion == "success")  # cancelled/failed jobs end early and skew averages
+    | ((.started_at|fromdate) - (.created_at|fromdate)) as $q
+    | ((.completed_at|fromdate) - (.started_at|fromdate)) as $t
+    | ([.steps[] | select((.name|test($re)) and .completed_at)
+        | (.completed_at|fromdate) - (.started_at|fromdate)] | add // 0) as $p
+    | ["\($wf) / \(.name)", $q, $p, ($t - $p), $t] | @tsv'
+done | awk -F'\t' '{n[$1]++; q[$1]+=$2; p[$1]+=$3; r[$1]+=$4; t[$1]+=$5}
+  END {for (k in n) printf "%-48s\t%4d\t%6.0f\t%6.0f\t%6.0f\t%6.0f\n",k,n[k],q[k]/n[k],p[k]/n[k],r[k]/n[k],t[k]/n[k]}' |
+  sort -t$'\t' -k6,6nr  # slowest job first
+```
+
+High `queue` → runner contention (macOS limit, too many parallel jobs). High `prep` → caching or tool installs. High `run` → the checks themselves (shard, dedupe). Save the output; it is the "before" column.
+
+| Check | How to verify | Fix |
+|-------|--------------|-----|
+| Stale PR runs cancelled, main runs never | Concurrency row in Workflow Hardening above | `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` |
+| Docs-only changes skip CI without blocking merge | B2 path-filter template; Section N `changes` job | push: `paths-ignore`; PR: job-level skip (a skipped job counts as passing, a workflow that never started leaves required checks pending) |
+| setup-* caches on, nothing useless cached | Cache rows above + B3.0 | `cache:` input / `Swatinem/rust-cache`; don't cache what the job never reads (the 10 GB per-repo budget is LRU-evicted) |
+| Tools are prebuilt, not compiled in CI | `grep -nE '(go\|cargo) install' .github/workflows/*.yml` returns nothing | `taiki-e/install-action`, a pinned release binary, or the tool's setup action |
+| `needs:` only where data or ordering is required | For each `needs: X`, the job reads `needs.X.outputs`/`needs.X.result`, downloads X's artifact, or is a deliberate gate (release after tests, scanner after `changes`) | Delete the edge so the jobs run in parallel |
+| Longest suite split across runners | The slowest `run` job in the baseline is under ~2× the next one | `strategy.matrix` shard (`--shard i/n` for jest/vitest/playwright, `pytest-split`, `go test` by package) |
+| macOS only where macOS is needed | `grep -n 'macos' .github/workflows/*.yml` → each hit builds/tests Apple targets | Format, lint, typecheck and dependency audit move to `ubuntu-latest`. Free accounts get 5 concurrent macOS jobs shared by every workflow (10× minute cost) |
+| No duplicated work | The same lint/test/scan does not run in two jobs or workflows; a job only restores caches and toolchains it uses (a frontend-only job doesn't pull the Rust cache) | Keep one owner per check |
+| Warm rebuild is near zero | Build twice locally; the second build should be close to instant | Dockerfile: `COPY` the lockfile and install dependencies *before* `COPY . .`; make/build targets must point at files that exist (a missing target rebuilds every time) |
+
+**2. After.** Merge the changes, let at least ~5 runs of each workflow complete, then re-run the script with `SINCE=<merge timestamp>` so pre-change runs don't dilute the averages. Present a before/after table per workflow/job (queue / prep / run / total) and iterate on whichever column is still largest.
+
 ### Present Results
 Show a summary table:
 ```
@@ -1516,6 +1560,7 @@ Show a summary table:
 | SHA pin script | ✅/❌ | |
 | Harden-Runner (all ubuntu jobs) | ✅/❌ | |
 | Workflow hardening | ✅/❌ | timeouts, permissions, shell, concurrency |
+| CI speed | ✅/❌ | slowest job, its queue/prep/run split |
 | Commit signing | ✅/❌ | SSH or GPG |
 | CodeScene | ✅/❌/N-A | quality gates config |
 ```
@@ -2022,27 +2067,32 @@ on:
   pull_request:
     # No paths-ignore here — required status checks must always run
 
-# 2. Concurrency — cancel stale runs on same PR
+# 2. Concurrency — cancel stale runs on same PR, never on main
 #
-# Canonical group: workflow name + PR number (when on a PR) or ref (when not).
+# Canonical group: workflow name + PR number (when on a PR) or commit SHA (push).
 # Including `${{ github.workflow }}` is what prevents two different workflows
 # from sharing a group accidentally and cancelling each other (a real footgun
 # if multiple workflows on the same repo end up with `group: ${{ github.ref }}`).
-# Falling back to `github.ref` when `pull_request.number` is null is what
-# scopes push-triggered runs per-branch.
+# Cancel only on PRs: a new push to a PR supersedes the old one, but every
+# commit on main must finish its run (it is what releases ship from).
+# Pushes fall back to `github.sha`, not `github.ref`: `cancel-in-progress:
+# false` protects only the RUNNING run — GitHub keeps one pending run per
+# group and cancels it when the next push arrives, so a ref-keyed group would
+# still skip the middle commit of three back-to-back pushes.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Intentional exceptions (must not cancel):
 #
 #   release.yml:    group: release-${{ github.ref }}, cancel-in-progress: false
 #   bypass-audit.yml: group: bypass-audit-${{ github.sha }}, cancel-in-progress: false
 #
-# Both are non-cancellable: releases must complete or fail cleanly without
-# being interrupted (cancelling mid-tag-and-push leaves orphan tags on
-# remote); the bypass audit must record one event per commit, never collapse
-# overlapping pushes. Every other workflow follows the canonical group.
+# Both are fully non-cancellable: releases must complete or fail cleanly
+# without being interrupted (cancelling mid-tag-and-push leaves orphan tags on
+# remote, so release serializes on the ref); the bypass audit must record one
+# event per commit, never collapse overlapping pushes. Every other workflow
+# follows the canonical group.
 #
 # Cron-only workflows (e.g. scorecard.yml) need no concurrency block —
 # the trigger is single-fired by the schedule and cannot collide with itself.
@@ -3173,8 +3223,8 @@ on:
       - '**/Package.swift'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # every main commit gets a full scan
 
 permissions: {}
 
