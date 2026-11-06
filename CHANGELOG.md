@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/chris-yyau/helmet/compare/v1.28.0...v1.29.0) (2026-11-06)
+
+
+### Features
+
+* **fleet-invariants:** fail when concurrency can cancel or drop a main scan ([#99](https://github.com/chris-yyau/helmet/issues/99)) ([888c5c2](https://github.com/chris-yyau/helmet/commit/888c5c2de47aae9b9ca4ae1c88feba997ac31307))
+
 # [1.28.0](https://github.com/chris-yyau/helmet/compare/v1.27.1...v1.28.0) (2026-11-06)
 
 
