@@ -41,6 +41,14 @@
 #      `|| exit 0`, `set +e`, a constant-false step `if:`, checkov `--soft-fail`.
 #   5. Reachability: `on.pull_request` present with NO `paths:`/`paths-ignore:` filter
 #      (a PR path filter can make a required scanner check never register).
+#   6. Every push (main) run completes: when `on.push` is present, each `concurrency:`
+#      block (workflow- or job-level) has `cancel-in-progress` absent/false or exactly
+#      `github.event_name == 'pull_request'`, AND a group that exactly matches an allowlisted
+#      per-workflow+commit shape — `github.workflow` + `pull_request.number || github.sha` (only when the triggers are
+#      pull_request/push alone and push is limited to one literal branch, no tags) or
+#      `github.run_id` (a ref-keyed group lets GitHub drop
+#      the PENDING run of a middle commit even with cancel off), and no job-level
+#      `concurrency:` (scanner jobs could replace each other). Anything else → FAIL.
 #
 # USAGE:
 #   scripts/check-fleet-scanner-invariants.sh <owner/repo> [<owner/repo> ...]
@@ -547,6 +555,63 @@ else:
     if isinstance(pr, dict) and ("paths" in pr or "paths-ignore" in pr):
         fail.append("[inv5] pull_request has a paths filter (required check may never register)")
 
+# Invariant 6: no main commit's scan is cancelled or dropped by concurrency.
+# The WHOLE group must match an allowlisted shape (optional literal prefix + fixed
+# expressions) — mixing in other expressions makes uniqueness unprovable, so anything
+# else is unverifiable → FAIL. Groups span workflows, so a sha key is paired with
+# `github.workflow`; and any second source of runs for the same sha (another ref, a tag,
+# another trigger) shares a sha group, so sha shapes need pull_request/push alone with push
+# limited to ONE literal branch. run_id is unique
+# per run and needs neither. Accepted limit: two workflow files with the same `name:`
+# share `github.workflow` — this checker reads security.yml alone and cannot see that.
+_PFX = r"[A-Za-z0-9_.-]*"
+_SHA_SHAPE = re.compile(_PFX + r"\$\{\{ github\.workflow \}\}-\$\{\{ github\.event\.pull_request\.number \|\| github\.sha \}\}")
+# The PR-number fallback is mandatory: without it a PR event (e.g. `closed` on merge) keys
+# on the merge sha and lands in the main push run's group.
+_RUN_SHAPE = re.compile(_PFX + r"(\$\{\{ github\.workflow \}\}-)?\$\{\{ github\.run_id \}\}")
+
+def sha_key_safe(triggers):
+    # Any other trigger (workflow_dispatch, schedule, merge_group…) can run the same sha
+    # into the same group and replace the pending main push run.
+    if not set(triggers) <= {"pull_request", "push"}:
+        return False
+    push = triggers.get("push")
+    if not isinstance(push, dict) or any(k in push for k in ("tags", "tags-ignore", "branches-ignore")):
+        return False
+    b = as_list(push.get("branches"))
+    return len(b) == 1 and re.fullmatch(r"[A-Za-z0-9_./-]+", str(b[0])) is not None
+
+def concurrency_weak(c):
+    if c is None:
+        return None  # no group → every run independent
+    if isinstance(c, dict):
+        group, cancel = c.get("group"), c.get("cancel-in-progress")
+    else:
+        group, cancel = c, None  # string form = group only, cancel defaults to false
+    cn = norm_expr(cancel)
+    if cn not in (None, "false", "github.event_name == 'pull_request'"):
+        return "cancel-in-progress %r can cancel a push run" % cn
+    g = str(group or "")
+    found = re.findall(r"\$\{\{([^'\"}]*)\}\}", g)  # quote-free interpolations only
+    if len(found) != g.count("${{"):
+        return "group %r has an expression this checker cannot verify" % group
+    canon = re.sub(r"\$\{\{([^'\"}]*)\}\}", lambda m: "${{ %s }}" % norm_expr(m.group(1)), g)
+    if _RUN_SHAPE.fullmatch(canon):
+        return None
+    if _SHA_SHAPE.fullmatch(canon) and sha_key_safe(triggers):
+        return None
+    return "group %r is not a verifiable per-workflow+commit key for this push trigger" % group
+
+if "push" in triggers:
+    why = concurrency_weak(doc.get("concurrency"))
+    if why:
+        fail.append("[inv6] workflow concurrency: %s" % why)
+    # Job-level groups can collide across scanner jobs in ONE run (GitHub replaces the
+    # pending job); the canonical has none, so any job-level block is unverifiable.
+    for jn, j in jobs.items():
+        if isinstance(j, dict) and j.get("concurrency") is not None:
+            fail.append("[inv6] job %s has job-level concurrency (scanner jobs can replace each other)" % jn)
+
 if fail:
     for f in fail:
         sys.stderr.write("  FAIL %s\n" % f)
@@ -582,6 +647,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
 on:
   pull_request:
   push:
+    branches: [main]
     paths: ['.github/**']
 jobs:
   changes:
@@ -685,6 +751,21 @@ EOF
   # no-needs / no-if scanner (truly unconditional) ⇒ PASS (inv 2 — stricter)
   expect 0 "unconditional scanner" "$(printf '%s\n' "$COMPLIANT" | \
     perl -0pe 's/  trivy:\n    needs: \[changes\]\n    if: [^\n]*\n/  trivy:\n/')"
+
+  # inv6: canonical concurrency (sha push fallback + PR-only cancel) ⇒ PASS
+  with_conc() { printf '%s\n' "$COMPLIANT" | GROUP="$1" CANCEL="$2" perl -0pe \
+    's/^jobs:\n/concurrency:\n  group: $ENV{GROUP}\n  cancel-in-progress: $ENV{CANCEL}\njobs:\n/m'; }
+  # shellcheck disable=SC2016  # literal GitHub expressions, not shell expansions
+  SHA_GROUP='${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}'
+  REF_GROUP='${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}'
+  expect 0 "inv6 canonical concurrency" "$(with_conc "$SHA_GROUP" "\${{ github.event_name == 'pull_request' }}")"
+  expect 0 "inv6 sha group, cancel false" "$(with_conc "$SHA_GROUP" false)"
+  expect 0 "inv6 literal prefix" "$(with_conc "security-$SHA_GROUP" false)"
+  # PR-only workflow may cancel freely on a ref group (no push run to lose) ⇒ PASS
+  expect 0 "inv6 PR-only ref+true" "$(with_conc "$REF_GROUP" true | \
+    perl -0pe "s/  push:\n(?:    [^\n]*\n)+//")"
+  # helmet's own security.yml must satisfy the contract it ships ⇒ PASS
+  expect 0 "helmet security.yml" "$(cat "$REPO_ROOT/.github/workflows/security.yml")"
 
   # --- FAIL fixtures ---
   # missing scanner (drop the trivy job) ⇒ FAIL (inv 1)
@@ -861,6 +942,43 @@ EOF
   # PR-trigger path filter added ⇒ FAIL (inv 5 reachability)
   expect 1 "PR path filter" "$(printf '%s\n' "$COMPLIANT" | \
     perl -0pe "s/^on:\n  pull_request:\n/on:\n  pull_request:\n    paths: ['src\/**']\n/m")"
+
+  # inv6: push run cancellable (bare true) ⇒ FAIL
+  expect 1 "inv6 cancel true on push" "$(with_conc "$SHA_GROUP" true)"
+  # inv6: PR-only cancel but ref group — GitHub drops the middle pending main run ⇒ FAIL
+  expect 1 "inv6 ref group drops pending" "$(with_conc "$REF_GROUP" "\${{ github.event_name == 'pull_request' }}")"
+  # inv6: unverifiable cancel expression ⇒ FAIL (fail-closed)
+  expect 1 "inv6 unknown cancel expr" "$(with_conc "$SHA_GROUP" "\${{ github.ref != 'refs/heads/dev' }}")"
+  # inv6: string-form ref group (cancel defaults false, still drops pending) ⇒ FAIL
+  expect 1 "inv6 string ref group" "$(printf '%s\n' "$COMPLIANT" | \
+    perl -0pe 's/^jobs:\n/concurrency: ci-\$\{\{ github.ref \}\}\njobs:\n/m')"
+  # inv6: sha only MENTIONED, not interpolated / not the push-time value ⇒ FAIL
+  expect 1 "inv6 literal sha text" "$(with_conc 'ci-github.sha' false)"
+  # inv6: quoted literal hiding delimiters evaluates to a constant ⇒ FAIL (unverifiable)
+  expect 1 "inv6 quoted delimiter trick" "$(with_conc "\${{ 'p }}\${{ github.run_id }}' }}" false)"
+  # inv6: bare sha group collides with other workflows on the same commit ⇒ FAIL
+  expect 1 "inv6 sha without workflow" "$(with_conc "\${{ github.sha }}" false)"
+  expect 0 "inv6 run_id group" "$(with_conc "\${{ github.run_id }}" false)"
+  # inv6: run_id is unique per run, so it holds even on an unrestricted push ⇒ PASS
+  expect 0 "inv6 run_id, any push" "$(with_conc "\${{ github.run_id }}" false | \
+    perl -0pe 's/    branches: \[main\]\n//')"
+  # inv6: sha group but push not limited to one branch — same sha on two refs shares it ⇒ FAIL
+  expect 1 "inv6 sha group, unrestricted push" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe 's/    branches: \[main\]\n//')"
+  expect 1 "inv6 sha group, tag push" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe "s/    branches: \[main\]\n/    branches: [main]\n    tags: ['v*']\n/")"
+  # inv6: sha without the PR-number fallback — a closed/merged PR event keys on main's sha ⇒ FAIL
+  expect 1 "inv6 sha without PR fallback" "$(with_conc "\${{ github.workflow }}-\${{ github.sha }}" "\${{ github.event_name == 'pull_request' }}")"
+  # inv6: another trigger can run the same sha into the sha group ⇒ FAIL
+  expect 1 "inv6 sha group, extra trigger" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe 's/^on:\n/on:\n  workflow_dispatch:\n/m')"
+  # inv6: extra expressions beside run_id make uniqueness unprovable ⇒ FAIL
+  expect 1 "inv6 run_id plus extra expr" "$(with_conc "\${{ github.event.head_commit.message }}-\${{ github.run_id }}" false)"
+  expect 1 "inv6 ref-first fallback" "$(with_conc "\${{ github.ref || github.sha }}" false)"
+  # inv6: ANY job-level concurrency (even sha + false) — shared group across scanner jobs
+  # lets GitHub replace a pending scanner job within one run ⇒ FAIL
+  expect 1 "inv6 job-level concurrency" "$(printf '%s\n' "$COMPLIANT" | perl -0pe \
+    's/  zizmor:\n/  zizmor:\n    concurrency:\n      group: scanners-\$\{\{ github.sha \}\}\n      cancel-in-progress: false\n/')"
 
   # unparseable YAML ⇒ FAIL (fail-closed)
   expect 1 "unparseable yaml" $'jobs:\n  x: [unbalanced\n'

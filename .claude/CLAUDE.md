@@ -28,7 +28,7 @@ skills/           Skill definitions (1: helmet — large four-phase onboarding s
 | `./scripts/bump-version.sh --check` | Verify manifests are in sync (used in CI) |
 | `.github/scripts/check-pinned-uses.sh` | Verify all Actions use full SHA pins |
 | `./scripts/check-template-pins.sh` | Verify SKILL.md template action pins match live workflow pins (runs in the `version-drift` CI job) |
-| `./scripts/check-fleet-scanner-invariants.sh --fleet` | Assert each fleet mirror's live `security.yml` still holds the security-critical scanner invariants (fail-closed gates, trivy/semgrep/checkov/zizmor blocking, PR reachability); tolerates benign customization. Needs `gh` + PyYAML |
+| `./scripts/check-fleet-scanner-invariants.sh --fleet` | Assert each fleet mirror's live `security.yml` still holds the security-critical scanner invariants (fail-closed gates, trivy/semgrep/checkov/zizmor blocking, PR reachability, no main run cancelled or dropped by `concurrency:`); tolerates benign customization. Needs `gh` + PyYAML |
 | `./scripts/check-fleet-scanner-invariants.sh --self-test` | Hermetic fixtures proving the invariant asserter fails closed (runs in the `version-drift` CI job) |
 | `./scripts/check-pin-staleness.sh` | Compare the run-line tool pins (semgrep/checkov/zizmor in `security.yml`, semantic-release set in `release.yml`) against PyPI/npm latest; exit 1 + a markdown table on drift, exit 2 on lookup failure (fail-closed). Powers `pin-staleness.yml`. Needs `curl` + `jq` |
 | `./scripts/check-pin-staleness.sh --self-test` | Hermetic fixtures proving extraction + stale/fresh/error classification (runs in the `version-drift` CI job) |
