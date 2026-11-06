@@ -44,8 +44,9 @@
 #   6. Every push (main) run completes: when `on.push` is present, each `concurrency:`
 #      block (workflow- or job-level) has `cancel-in-progress` absent/false or exactly
 #      `github.event_name == 'pull_request'`, AND a group that exactly matches an allowlisted
-#      per-workflow+commit shape — `github.workflow` + `github.sha` (only when push is limited
-#      to one literal branch, no tags) or `github.run_id` (a ref-keyed group lets GitHub drop
+#      per-workflow+commit shape — `github.workflow` + `github.sha` (only when the triggers are
+#      pull_request/push alone and push is limited to one literal branch, no tags) or
+#      `github.run_id` (a ref-keyed group lets GitHub drop
 #      the PENDING run of a middle commit even with cancel off), and no job-level
 #      `concurrency:` (scanner jobs could replace each other). Anything else → FAIL.
 #
@@ -558,15 +559,21 @@ else:
 # The WHOLE group must match an allowlisted shape (optional literal prefix + fixed
 # expressions) — mixing in other expressions makes uniqueness unprovable, so anything
 # else is unverifiable → FAIL. Groups span workflows, so a sha key is paired with
-# `github.workflow`; and the same sha pushed to two refs shares a sha group, so sha
-# shapes need push limited to ONE literal branch with no tag triggers. run_id is unique
+# `github.workflow`; and any second source of runs for the same sha (another ref, a tag,
+# another trigger) shares a sha group, so sha shapes need pull_request/push alone with push
+# limited to ONE literal branch. run_id is unique
 # per run and needs neither. Accepted limit: two workflow files with the same `name:`
 # share `github.workflow` — this checker reads security.yml alone and cannot see that.
 _PFX = r"[A-Za-z0-9_.-]*"
 _SHA_SHAPE = re.compile(_PFX + r"\$\{\{ github\.workflow \}\}-\$\{\{ (github\.event\.pull_request\.number \|\| )?github\.sha \}\}")
 _RUN_SHAPE = re.compile(_PFX + r"(\$\{\{ github\.workflow \}\}-)?\$\{\{ github\.run_id \}\}")
 
-def single_branch_push(push):
+def sha_key_safe(triggers):
+    # Any other trigger (workflow_dispatch, schedule, merge_group…) can run the same sha
+    # into the same group and replace the pending main push run.
+    if not set(triggers) <= {"pull_request", "push"}:
+        return False
+    push = triggers.get("push")
     if not isinstance(push, dict) or any(k in push for k in ("tags", "tags-ignore", "branches-ignore")):
         return False
     b = as_list(push.get("branches"))
@@ -589,7 +596,7 @@ def concurrency_weak(c):
     canon = re.sub(r"\$\{\{([^'\"}]*)\}\}", lambda m: "${{ %s }}" % norm_expr(m.group(1)), g)
     if _RUN_SHAPE.fullmatch(canon):
         return None
-    if _SHA_SHAPE.fullmatch(canon) and single_branch_push(triggers.get("push")):
+    if _SHA_SHAPE.fullmatch(canon) and sha_key_safe(triggers):
         return None
     return "group %r is not a verifiable per-workflow+commit key for this push trigger" % group
 
@@ -958,6 +965,9 @@ EOF
     perl -0pe 's/    branches: \[main\]\n//')"
   expect 1 "inv6 sha group, tag push" "$(with_conc "$SHA_GROUP" false | \
     perl -0pe "s/    branches: \[main\]\n/    branches: [main]\n    tags: ['v*']\n/")"
+  # inv6: another trigger can run the same sha into the sha group ⇒ FAIL
+  expect 1 "inv6 sha group, extra trigger" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe 's/^on:\n/on:\n  workflow_dispatch:\n/m')"
   # inv6: extra expressions beside run_id make uniqueness unprovable ⇒ FAIL
   expect 1 "inv6 run_id plus extra expr" "$(with_conc "\${{ github.event.head_commit.message }}-\${{ github.run_id }}" false)"
   expect 1 "inv6 ref-first fallback" "$(with_conc "\${{ github.ref || github.sha }}" false)"
