@@ -43,10 +43,11 @@
 #      (a PR path filter can make a required scanner check never register).
 #   6. Every push (main) run completes: when `on.push` is present, each `concurrency:`
 #      block (workflow- or job-level) has `cancel-in-progress` absent/false or exactly
-#      `github.event_name == 'pull_request'`, AND a group keyed on `github.sha`/`github.run_id`
-#      (a ref-keyed group lets GitHub drop the PENDING run of a middle commit even with
-#      cancel off), and no job-level `concurrency:` (scanner jobs could replace each other).
-#      Any other cancel/group expression is UNVERIFIABLE → FAIL.
+#      `github.event_name == 'pull_request'`, AND a group that exactly matches an allowlisted
+#      per-workflow+commit shape — `github.workflow` + `github.sha` (only when push is limited
+#      to one literal branch, no tags) or `github.run_id` (a ref-keyed group lets GitHub drop
+#      the PENDING run of a middle commit even with cancel off), and no job-level
+#      `concurrency:` (scanner jobs could replace each other). Anything else → FAIL.
 #
 # USAGE:
 #   scripts/check-fleet-scanner-invariants.sh <owner/repo> [<owner/repo> ...]
@@ -554,13 +555,22 @@ else:
         fail.append("[inv5] pull_request has a paths filter (required check may never register)")
 
 # Invariant 6: no main commit's scan is cancelled or dropped by concurrency.
-# The group must INTERPOLATE an expression whose push-time value is per-commit; a
-# mention (`ci-github.sha`, `github.ref || github.sha`) is not enough. Allowlist, not a
-# parser: anything else is unverifiable → FAIL.
-# Groups span workflows, so a sha key must be paired with `github.workflow`; run_id is
-# globally unique on its own.
-_PER_SHA = {"github.sha", "github.event.pull_request.number || github.sha"}
-_PER_RUN = {"github.run_id", "github.event.pull_request.number || github.run_id"}
+# The WHOLE group must match an allowlisted shape (optional literal prefix + fixed
+# expressions) — mixing in other expressions makes uniqueness unprovable, so anything
+# else is unverifiable → FAIL. Groups span workflows, so a sha key is paired with
+# `github.workflow`; and the same sha pushed to two refs shares a sha group, so sha
+# shapes need push limited to ONE literal branch with no tag triggers. run_id is unique
+# per run and needs neither. Accepted limit: two workflow files with the same `name:`
+# share `github.workflow` — this checker reads security.yml alone and cannot see that.
+_PFX = r"[A-Za-z0-9_.-]*"
+_SHA_SHAPE = re.compile(_PFX + r"\$\{\{ github\.workflow \}\}-\$\{\{ (github\.event\.pull_request\.number \|\| )?github\.sha \}\}")
+_RUN_SHAPE = re.compile(_PFX + r"(\$\{\{ github\.workflow \}\}-)?\$\{\{ github\.run_id \}\}")
+
+def single_branch_push(push):
+    if not isinstance(push, dict) or any(k in push for k in ("tags", "tags-ignore", "branches-ignore")):
+        return False
+    b = as_list(push.get("branches"))
+    return len(b) == 1 and re.fullmatch(r"[A-Za-z0-9_./-]+", str(b[0])) is not None
 
 def concurrency_weak(c):
     if c is None:
@@ -576,10 +586,12 @@ def concurrency_weak(c):
     found = re.findall(r"\$\{\{([^'\"}]*)\}\}", g)  # quote-free interpolations only
     if len(found) != g.count("${{"):
         return "group %r has an expression this checker cannot verify" % group
-    exprs = {norm_expr(e) for e in found}
-    if not (exprs & _PER_RUN or (exprs & _PER_SHA and "github.workflow" in exprs)):
-        return "group %r is not unique per workflow+commit (pending push runs get dropped)" % group
-    return None
+    canon = re.sub(r"\$\{\{([^'\"}]*)\}\}", lambda m: "${{ %s }}" % norm_expr(m.group(1)), g)
+    if _RUN_SHAPE.fullmatch(canon):
+        return None
+    if _SHA_SHAPE.fullmatch(canon) and single_branch_push(triggers.get("push")):
+        return None
+    return "group %r is not a verifiable per-workflow+commit key for this push trigger" % group
 
 if "push" in triggers:
     why = concurrency_weak(doc.get("concurrency"))
@@ -626,6 +638,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
 on:
   pull_request:
   push:
+    branches: [main]
     paths: ['.github/**']
 jobs:
   changes:
@@ -738,9 +751,10 @@ EOF
   REF_GROUP='${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}'
   expect 0 "inv6 canonical concurrency" "$(with_conc "$SHA_GROUP" "\${{ github.event_name == 'pull_request' }}")"
   expect 0 "inv6 sha group, cancel false" "$(with_conc "$SHA_GROUP" false)"
+  expect 0 "inv6 literal prefix" "$(with_conc "security-$SHA_GROUP" false)"
   # PR-only workflow may cancel freely on a ref group (no push run to lose) ⇒ PASS
   expect 0 "inv6 PR-only ref+true" "$(with_conc "$REF_GROUP" true | \
-    perl -0pe "s/  push:\n    paths: \[[^\n]*\n//")"
+    perl -0pe "s/  push:\n(?:    [^\n]*\n)+//")"
   # helmet's own security.yml must satisfy the contract it ships ⇒ PASS
   expect 0 "helmet security.yml" "$(cat "$REPO_ROOT/.github/workflows/security.yml")"
 
@@ -936,6 +950,16 @@ EOF
   # inv6: bare sha group collides with other workflows on the same commit ⇒ FAIL
   expect 1 "inv6 sha without workflow" "$(with_conc "\${{ github.sha }}" false)"
   expect 0 "inv6 run_id group" "$(with_conc "\${{ github.run_id }}" false)"
+  # inv6: run_id is unique per run, so it holds even on an unrestricted push ⇒ PASS
+  expect 0 "inv6 run_id, any push" "$(with_conc "\${{ github.run_id }}" false | \
+    perl -0pe 's/    branches: \[main\]\n//')"
+  # inv6: sha group but push not limited to one branch — same sha on two refs shares it ⇒ FAIL
+  expect 1 "inv6 sha group, unrestricted push" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe 's/    branches: \[main\]\n//')"
+  expect 1 "inv6 sha group, tag push" "$(with_conc "$SHA_GROUP" false | \
+    perl -0pe "s/    branches: \[main\]\n/    branches: [main]\n    tags: ['v*']\n/")"
+  # inv6: extra expressions beside run_id make uniqueness unprovable ⇒ FAIL
+  expect 1 "inv6 run_id plus extra expr" "$(with_conc "\${{ github.event.head_commit.message }}-\${{ github.run_id }}" false)"
   expect 1 "inv6 ref-first fallback" "$(with_conc "\${{ github.ref || github.sha }}" false)"
   # inv6: ANY job-level concurrency (even sha + false) — shared group across scanner jobs
   # lets GitHub replace a pending scanner job within one run ⇒ FAIL
